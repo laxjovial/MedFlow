@@ -1,7 +1,29 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Packaging
 build/
 dist/
 *.spec
-medflow.db
+
+# Local database and generated data (never commit patient data)
+*.db
+*.sqlite3
+data/
+exports/
+backups/
+logs/
+
+# Local application configuration (may contain machine-specific paths)
+config.json
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor / tooling
+.claude/settings.local.json
+.idea/
+.vscode/
