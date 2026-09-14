@@ -34,6 +34,14 @@ MedFlow implements all five as architecture, not slogans.
 
 ## What MedFlow does today
 
+### A real front door
+
+The web server ships a complete public site — **landing page, features, security, and a how-to guide** — with top navigation and a hideable sidebar menu, in the same calm clinical design. Login and signup pages cross-link both ways; protected areas redirect to sign-in.
+
+- **Self-service signup** — the first account on a fresh install becomes the administrator; later signups start as viewers pending promotion. (Disable open signup per deployment in `config.json`.)
+- **Sign in with Google** — optional; set `MEDFLOW_GOOGLE_CLIENT_ID` in the environment. ID tokens are verified against Google's published keys (pure-Python RS256, no extra dependencies) with audience, issuer, expiry, and verified-email checks. Works in the web app and the desktop app.
+- **Temporary visitors** — administrators mint scoped, time-limited accounts: choose the patients, set the window (1 hour – 30 days), share the generated credentials. Guests see only those records, can write nothing, are cut off the moment the window closes, and can be revoked instantly. Manage them in the web workspace's **Access** panel or desktop **Settings → Temporary access**.
+
 ### Two faces, one brain
 
 ```
@@ -75,7 +83,7 @@ The chart is sectioned the way clinicians think, each with inline add-rows:
 
 ### Roles, security, and the audit trail
 - **Argon2-hashed passwords** (bcrypt readable for migration) — never plaintext, never reversible
-- **Six roles** — administrator, physician, nurse, technician, reception, viewer — mapped over a fine-grained permission vocabulary (`patients.create`, `records.edit`, `appointments.manage`, `export.data`, `users.manage`, …)
+- **Seven roles** — administrator, physician, nurse, technician, reception, viewer, and temporary — mapped over a fine-grained permission vocabulary (`patients.create`, `records.edit`, `appointments.manage`, `export.data`, `users.manage`, …)
 - Permissions shape **both faces live**: desktop menus, web buttons, and API routes all check the same vocabulary, so demoting a user instantly shrinks the app they see
 - **Full audit trail** — logins, every create/update/delete, exports, transfers, syncs — with actor, device, and timestamp; filterable in the Activity view, exportable as a dataset
 - API bearer tokens are **HMAC-signed with expiry**, with the secret stored per-installation; tokens die in 12 hours, deactivation kills access instantly
@@ -162,6 +170,9 @@ The web face is a full JSON API (OpenAPI docs at `/docs`). Highlights:
 
 ```
 POST   /api/auth/login                     → bearer token
+POST   /api/auth/signup                    → self-service registration
+POST   /api/auth/google                    → Google sign-in (optional)
+GET    /api/auth/config                    → public login-page configuration
 GET    /api/patients?q=…                   → search (auth)
 POST   /api/patients                       → register (patients.create)
 PATCH  /api/patients/{id}                  → true PATCH semantics
@@ -170,6 +181,9 @@ GET    /api/patients/{id}/chart            → every chart section at once
 POST   /api/patients/{id}/vitals|diagnoses|medications|allergies|lab-results|notes
 GET    /api/appointments?scope=today       → schedule
 PATCH  /api/appointments/{id}/status       → lifecycle transitions
+GET    /api/temp-users                     → list guest accesses (users.manage)
+POST   /api/temp-users                     → mint a scoped, timed visitor
+DELETE /api/temp-users/{id}                → revoke immediately
 GET    /api/reports/dashboard              → aggregates
 GET    /api/export/{dataset}.csv|.json     → downloads
 GET    /api/patients/{id}/chart.html       → printable chart
@@ -177,6 +191,8 @@ POST   /api/sync/pull  ·  /api/sync/push   → device sync
 POST   /api/exchange/{id}/export           → transfer bundle
 GET    /api/health                         → public status
 ```
+
+Public site routes: `/` (landing), `/features`, `/security`, `/guide`, `/login`, `/signup`, and `/app` (the signed-in workspace).
 
 Domain errors arrive as structured JSON with per-field messages (`{"error": {"message": …, "fields": {…}}}`), so any client — the built-in web app, the desktop, or a third-party integration — can render them properly.
 
