@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to use — MedFlow</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div id="sidebar-root"></div>
+
+<header class="site-header">
+  <a class="brand" href="/"><div class="brand-mark">M</div><span class="brand-name">MedFlow</span></a>
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a href="/features">Features</a>
+    <a href="/security">Security</a>
+    <a href="/guide" class="active">How to use</a>
+  </nav>
+  <div class="site-cta">
+    <a class="btn ghost" href="/login">Sign in</a>
+    <a class="btn primary" href="/signup">Get started</a>
+    <button class="menu-btn" aria-label="Open menu">☰</button>
+  </div>
+</header>
+
+<div class="page">
+  <h1>How to use MedFlow</h1>
+  <p class="muted">From first account to daily workflow — the way clinics actually run it.</p>
+
+  <h2 class="section-title">Getting started</h2>
+  <div class="steps">
+    <div class="step"><div><h4>Create the account</h4>
+      <p>Sign up with a password or Google on this site. The very first account in a fresh installation becomes the administrator.</p></div></div>
+    <div class="step"><div><h4>Sign in</h4>
+      <p>The same credentials work on the web workspace and the desktop app. Sessions last 12 hours; sign in again when they lapse.</p></div></div>
+    <div class="step"><div><h4>Register your first patient</h4>
+      <p>Patients → “New patient”. Only the name is required; add age, contacts, and a working diagnosis as you go.</p></div></div>
+    <div class="step"><div><h4>Chart the visit</h4>
+      <p>Open the record and use the inline row in each section — vitals, diagnoses, medications, allergies, labs, notes. Everything lands on the timeline.</p></div></div>
+    <div class="step"><div><h4>Run the schedule</h4>
+      <p>Appointments → “Schedule”, then advance statuses as the visit progresses: scheduled → checked in → in progress → completed.</p></div></div>
+    <div class="step"><div><h4>Back up before you sleep</h4>
+      <p>Settings → “Create backup now”, or let an automation rule do it. Snapshots are plain SQLite files you can copy anywhere.</p></div></div>
+  </div>
+
+  <h2 class="section-title">Sharing access safely</h2>
+  <p>Need an external consultant or a supervisor to review one patient? In the web workspace open
+     <strong>Access</strong> in the sidebar, pick the patient(s), set how long the window stays open,
+     and hand over the generated username and password. They see exactly those records and nothing else,
+     and the account stops working the moment it expires — or instantly, if you revoke it.</p>
+
+  <h2 class="section-title">Running the desktop app</h2>
+  <div class="code">python -m venv .venv
+<span class="c"># Windows: .venv\Scripts\activate — macOS/Linux: source .venv/bin/activate</span>
+pip install -r requirements.txt
+python main.py</div>
+  <p>The desktop app reads the same database and accounts as this website. Point a workstation at a
+     running server with Settings → “Connect to server”, or keep it fully offline — both work.</p>
+
+  <h2 class="section-title">Serving the web workspace yourself</h2>
+  <div class="code">python main.py --server --host 0.0.0.0 --port 8000</div>
+  <p>The site you're reading, the workspace, and the JSON API (<a href="/docs">/docs</a>) all come from
+     that one process on your own machine.</p>
+</div>
+
+<footer class="site-footer">
+  MedFlow — local-first clinic management · <a href="/">Home</a> ·
+  <a href="/features">Features</a> · <a href="/security">Security</a>
+</footer>
+
+<script src="/static/site.js"></script>
+</body>
+</html>

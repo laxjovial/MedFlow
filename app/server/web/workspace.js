@@ -42,7 +42,7 @@ function logout() {
   state.user = null;
   localStorage.removeItem("medflow.session");
   $("#app-view").classList.add("hidden");
-  $("#login-view").classList.remove("hidden");
+  $("#login-gate").classList.remove("hidden");
 }
 
 async function login(username, password) {
@@ -58,17 +58,20 @@ async function login(username, password) {
 }
 
 function enterApp() {
-  $("#login-view").classList.add("hidden");
+  $("#login-gate").classList.add("hidden");
   $("#app-view").classList.remove("hidden");
   $("#whoami").textContent =
-    `${state.user.display_name} · ${state.user.role}`;
+    `${state.user.display_name} · ${state.user.role}` +
+    (state.user.temporary ? " (temporary)" : "");
   const perms = new Set(state.user.permissions || []);
+  const temporary = !!state.user.temporary;
   $("#btn-new-patient").classList.toggle("hidden", !perms.has("patients.create"));
   $("#btn-delete-patient").classList.toggle("hidden", !perms.has("patients.delete"));
   $("#btn-new-appt").classList.toggle("hidden", !perms.has("appointments.manage"));
-  $("#perm-note").textContent = perms.size
-    ? `${perms.size} permissions`
-    : "read-only session";
+  $("#nav-access").classList.toggle("hidden", !perms.has("users.manage"));
+  $("#perm-note").textContent = temporary
+    ? `temporary access${state.user.expires_at ? " until " + state.user.expires_at.replace("T", " ") : ""}`
+    : perms.size ? `${perms.size} permissions` : "read-only session";
   showView("dashboard");
   loadDashboard();
   api("/health").then(h =>
@@ -90,8 +93,30 @@ $$(".nav-btn").forEach(btn =>
     if (btn.dataset.view === "dashboard") loadDashboard();
     if (btn.dataset.view === "patients") loadPatients();
     if (btn.dataset.view === "appointments") loadAppointments();
+    if (btn.dataset.view === "access") loadTempUsers();
     if (btn.dataset.view === "activity") loadActivity();
   }));
+
+/* sidebar collapse on narrow screens */
+const sideBar = document.getElementById("side");
+const toggleBtn = document.getElementById("side-collapse");
+toggleBtn.addEventListener("click", () => {
+  const collapsed = sideBar.style.display === "none";
+  sideBar.style.display = collapsed ? "" : "none";
+  toggleBtn.textContent = collapsed ? "◀ Hide menu" : "▶ Show menu";
+  if (!collapsed && window.innerWidth < 700) toggleBtn.style.display = "none";
+  if (collapsed) {
+    toggleBtn.style.display = "";
+    toggleBtn.style.position = "fixed";
+    toggleBtn.style.top = "64px";
+    toggleBtn.style.left = "10px";
+    toggleBtn.style.zIndex = "30";
+    toggleBtn.style.background = "#fff";
+    toggleBtn.style.border = "1px solid var(--line)";
+    toggleBtn.style.padding = "6px 10px";
+    toggleBtn.style.borderRadius = "8px";
+  }
+});
 
 /* ------------------------------------------------------------------ dashboard */
 
@@ -323,6 +348,70 @@ $("#form-appointment").addEventListener("submit", async e => {
 });
 
 $("#btn-logout").addEventListener("click", logout);
+
+/* ------------------------------------------------------------------ temporary access */
+
+async function loadTempUsers() {
+  try {
+    const guests = await api("/temp-users");
+    fillTable($("#temp-table"), guests, [
+      ["label", "Who"],
+      ["username", "Username"],
+      [null, "Expires", r => r.expires_at ? r.expires_at.replace("T", " ") : "—"],
+      [null, "Patients", r => (r.patient_ids || []).join(", ") || "—"],
+      [null, "Status", r => r.expired ? "expired" : (r.active ? "active" : "revoked")],
+      [null, "", r => ""],
+    ]);
+    // turn the last cell of active rows into a revoke button
+    const bodyRows = $$("#temp-table tbody tr")
+      .filter(tr => !tr.querySelector("td[colspan]"));
+    bodyRows.forEach((tr, i) => {
+      const guest = guests[i];
+      const cell = tr.lastElementChild;
+      if (guest && guest.active && !guest.expired) {
+        const btn = document.createElement("button");
+        btn.className = "btn danger";
+        btn.textContent = "Revoke";
+        btn.style.padding = "4px 10px";
+        btn.addEventListener("click", async () => {
+          try {
+            await api(`/temp-users/${guest.id}`, { method: "DELETE" });
+            toast("Access revoked", "ok");
+            loadTempUsers();
+          } catch (err) {
+            toast(err.message);
+          }
+        });
+        cell.appendChild(btn);
+      }
+    });
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+$("#temp-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const raw = Object.fromEntries(new FormData(e.target));
+  const ids = raw.patient_ids.split(",").map(s => parseInt(s.trim(), 10))
+    .filter(n => Number.isInteger(n) && n > 0);
+  try {
+    const created = await api("/temp-users", {
+      method: "POST",
+      body: JSON.stringify({ label: raw.label, hours: parseFloat(raw.hours),
+                             patient_ids: ids }),
+    });
+    e.target.reset();
+    const box = $("#temp-credential");
+    $("#temp-credential-text").textContent =
+      `Who: ${created.label}\nUsername: ${created.username}\n` +
+      `Password: ${created.password}\nExpires: ${created.expires_at.replace("T", " ")}`;
+    box.classList.remove("hidden");
+    loadTempUsers();
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 /* ------------------------------------------------------------------ helpers */
 

@@ -61,6 +61,7 @@ class Config:
     export_dir: str | None = None
     log_dir: str | None = None
     theme: str = "system"           # system | light | dark
+    allow_open_signup: bool = True  # /api/auth/signup toggle for private deployments
     sync: SyncConfig = field(default_factory=SyncConfig)
     cloud_backup: CloudBackupConfig = field(default_factory=CloudBackupConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)

@@ -98,6 +98,24 @@ class PatientRepository(_Repository):
         params.append(limit)
         return [PatientSummary.from_row(r) for r in self._query_all(sql, params)]
 
+    def search_scoped(self, scope_ids: list[int], query: str = "",
+                      limit: int = 200) -> list[PatientSummary]:
+        """Search within a temporary user's allowed patients only."""
+        placeholders = ", ".join("?" for _ in scope_ids)
+        rows = self._query_all(
+            f"SELECT patient_id, patient_number, name, age, diagnosis, "
+            f"updated_at, version FROM patients WHERE deleted = 0 "
+            f"AND patient_id IN ({placeholders}) "
+            f"ORDER BY name COLLATE NOCASE LIMIT ?",
+            tuple(scope_ids) + (limit,),
+        )
+        summaries = [PatientSummary.from_row(r) for r in rows]
+        if not query:
+            return summaries
+        query = query.lower()
+        return [s for s in summaries
+                if query in f"{s.patient_number} {s.name} {s.diagnosis or ''}".lower()]
+
     def deleted_summaries(self) -> list[PatientSummary]:
         """Soft-deleted patients, most recently active first (recycle bin)."""
         rows = self._query_all(
@@ -354,6 +372,13 @@ class UserRepository(_Repository):
         row = self._query_one(
             f"SELECT * FROM {self.table} WHERE username = ? COLLATE NOCASE",
             (username,),
+        )
+        return User.from_row(row) if row else None
+
+    def get_by_email(self, email: str) -> User | None:
+        row = self._query_one(
+            f"SELECT * FROM {self.table} WHERE LOWER(email) = LOWER(?)",
+            (email,),
         )
         return User.from_row(row) if row else None
 

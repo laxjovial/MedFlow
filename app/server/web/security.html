@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security — MedFlow</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div id="sidebar-root"></div>
+
+<header class="site-header">
+  <a class="brand" href="/"><div class="brand-mark">M</div><span class="brand-name">MedFlow</span></a>
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a href="/features">Features</a>
+    <a href="/security" class="active">Security</a>
+    <a href="/guide">How to use</a>
+  </nav>
+  <div class="site-cta">
+    <a class="btn ghost" href="/login">Sign in</a>
+    <a class="btn primary" href="/signup">Get started</a>
+    <button class="menu-btn" aria-label="Open menu">☰</button>
+  </div>
+</header>
+
+<div class="page">
+  <h1>Security & privacy</h1>
+  <p class="muted">MedFlow's threat model starts at your front door, not a data center you can't inspect.</p>
+
+  <div class="grid3">
+    <div class="card"><div class="ico">🔑</div><h4>Passwords</h4>
+      <p>Argon2id hashing — never plaintext, never reversible. Bcrypt hashes remain readable for migration. Minimum 8 characters enforced at creation.</p></div>
+    <div class="card"><div class="ico">🎫</div><h4>Sessions</h4>
+      <p>HMAC-signed bearer tokens with expiry, secret stored per-installation beside the database. Permissions resolve live per request — deactivation and expiry take effect instantly.</p></div>
+    <div class="card"><div class="ico">👤</div><h4>Google sign-in</h4>
+      <p>Optional. ID tokens are verified against Google's published keys with audience, issuer, and expiry checks; the email comes from the verified profile, never self-reported. Disable it by simply not configuring a client ID.</p></div>
+    <div class="card"><div class="ico">⏳</div><h4>Temporary access</h4>
+      <p>Guest accounts expire on a clock you set and are limited to the exact patients you pick. Expired accounts are refused at login and cut off mid-session. Revocation is one click.</p></div>
+    <div class="card"><div class="ico">📜</div><h4>Audit trail</h4>
+      <p>Sign-ins, record changes, exports, transfers and syncs are recorded with actor, device, and timestamp — filterable in the app, exportable as a dataset.</p></div>
+    <div class="card"><div class="ico">🏠</div><h4>Data locality</h4>
+      <p>No telemetry, no license servers, no third-party calls. The database is a plain SQLite file on your disk; backups and exports are ordinary files.</p></div>
+  </div>
+
+  <h2 class="section-title">Who can see what</h2>
+  <table class="docs-table">
+    <tr><th>Role</th><th>Patients</th><th>Records</th><th>Appointments</th><th>Admin</th></tr>
+    <tr><td>Administrator</td><td>Full</td><td>Full</td><td>Manage</td><td>Users, settings, sync, audit</td></tr>
+    <tr><td>Physician</td><td>Create/edit</td><td>Full</td><td>Manage</td><td>View audit</td></tr>
+    <tr><td>Nurse</td><td>Create/edit</td><td>Full</td><td>Manage</td><td>—</td></tr>
+    <tr><td>Technician</td><td>View</td><td>Edit</td><td>View</td><td>—</td></tr>
+    <tr><td>Reception</td><td>Create/edit</td><td>—</td><td>Manage</td><td>—</td></tr>
+    <tr><td>Viewer</td><td>View</td><td>View</td><td>View</td><td>—</td></tr>
+    <tr><td>Temporary visitor</td><td>Only the patients picked for them, until expiry</td><td>View (scoped)</td><td>—</td><td>—</td></tr>
+  </table>
+</div>
+
+<footer class="site-footer">
+  MedFlow — local-first clinic management · <a href="/">Home</a> ·
+  <a href="/features">Features</a> · <a href="/guide">Guide</a>
+</footer>
+
+<script src="/static/site.js"></script>
+</body>
+</html>

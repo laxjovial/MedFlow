@@ -3,251 +3,91 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MedFlow — Clinic Workspace</title>
+<title>MedFlow — Local-first clinic management</title>
+<meta name="description" content="MedFlow is a local-first clinic management platform: patient records, appointments, reports and inter-facility transfer — on your machine, no vendor cloud.">
 <link rel="stylesheet" href="/static/styles.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🩺</text></svg>">
 </head>
 <body>
 
-<!-- ============================== LOGIN ============================== -->
-<div id="login-view" class="login-wrap hidden">
-  <div class="login-card">
-    <div class="brand">
-      <div class="brand-mark">M</div>
-      <div>
-        <h1>MedFlow</h1>
-        <p class="muted">Local-first clinic workspace</p>
-      </div>
+<div id="sidebar-root"></div>
+
+<header class="site-header">
+  <a class="brand" href="/">
+    <div class="brand-mark">M</div>
+    <span class="brand-name">MedFlow</span>
+  </a>
+  <nav class="topnav">
+    <a href="/" class="active">Home</a>
+    <a href="/features">Features</a>
+    <a href="/security">Security</a>
+    <a href="/guide">How to use</a>
+  </nav>
+  <div class="site-cta">
+    <a class="btn ghost" href="/login">Sign in</a>
+    <a class="btn primary" href="/signup">Get started</a>
+    <button class="menu-btn" id="menu-btn" aria-label="Open menu">☰</button>
+  </div>
+</header>
+
+<section class="hero">
+  <h1>Clinic records that live on your machine</h1>
+  <p class="lede">MedFlow is a local-first clinic management platform: patient records,
+     appointments, reports and inter-facility transfer — with a desktop app and a
+     self-hosted web workspace. No vendor cloud. No per-seat subscriptions.
+     Your data never leaves machines you control.</p>
+  <div class="cta-row">
+    <a class="btn primary big" href="/signup">Create your account</a>
+    <a class="btn big" href="/login">Sign in</a>
+  </div>
+  <p class="muted small" style="margin-top:14px">
+    Works offline · SQLite file you can hold · Open API</p>
+</section>
+
+<div class="page">
+  <h2 class="section-title">Why clinics choose MedFlow</h2>
+  <p class="section-sub">Built on what makes medical software actually get used</p>
+  <div class="grid3">
+    <div class="card"><div class="ico">⚡</div><h4>Fast to the task</h4>
+      <p>Search-first navigation finds any patient in under a second. Chart sections have inline entry rows, so documenting a visit is one screen — not five dialogs.</p></div>
+    <div class="card"><div class="ico">🧘</div><h4>Calm by design</h4>
+      <p>One accent color, clear hierarchy, readable tables. Software that feels quiet reduces the documentation fatigue clinicians complain about most.</p></div>
+    <div class="card"><div class="ico">🔒</div><h4>Yours, provably</h4>
+      <p>The database is a file you can copy. Every action lands in an audit trail. Backups are plain SQLite you can email to yourself.</p></div>
+    <div class="card"><div class="ico">📴</div><h4>Offline first</h4>
+      <p>A power cut or dead router never stops the clinic. The desktop app needs no network at all; sync is optional, not a dependency.</p></div>
+    <div class="card"><div class="ico">🤝</div><h4>Facility to facility</h4>
+      <p>Move a complete record to another MedFlow facility as a checksummed file — new record or supervised merge, your choice.</p></div>
+    <div class="card"><div class="ico">🚪</div><h4>Exit ramps, not lock-in</h4>
+      <p>CSV and JSON exports, printable charts, open API. Your data leaves as easily as it arrived.</p></div>
+  </div>
+
+  <h2 class="section-title">How it works</h2>
+  <div class="steps">
+    <div class="step"><div><h4>Create your account</h4>
+      <p>Sign up with a password or Google. The first account becomes the administrator of your facility.</p></div></div>
+    <div class="step"><div><h4>Register patients and chart visits</h4>
+      <p>Demographics, vitals, diagnoses, medications, allergies, labs and notes — each with validation, timestamps, and a running clinical timeline.</p></div></div>
+    <div class="step"><div><h4>Run the front desk</h4>
+      <p>Schedule appointments and walk them through check-in, in-progress, completed or no-show. The dashboard shows today at a glance.</p></div></div>
+    <div class="step"><div><h4>Own your data forever</h4>
+      <p>One-click backups, CSV/JSON exports, printable charts. When you add staff, share read-only access with temporary scoped visitors.</p></div></div>
+  </div>
+
+  <div class="banner">
+    <div>
+      <h3>Run it yourself in one command</h3>
+      <p>The web workspace and API are built in — no separate frontend to deploy.</p>
     </div>
-    <form id="login-form">
-      <label>Username
-        <input id="login-user" autocomplete="username" required>
-      </label>
-      <label>Password
-        <input id="login-pass" type="password" autocomplete="current-password" required>
-      </label>
-      <button class="btn primary full" type="submit">Sign in</button>
-      <p id="login-error" class="error hidden"></p>
-    </form>
-    <p class="muted small">Runs entirely on this machine. Your records never leave it.</p>
+    <a class="btn" href="/guide">Read the guide</a>
   </div>
 </div>
 
-<!-- ============================== APP ================================ -->
-<div id="app-view" class="hidden">
-  <header class="topbar">
-    <div class="brand small-brand">
-      <div class="brand-mark">M</div>
-      <strong>MedFlow</strong>
-      <span id="facility-label" class="muted"></span>
-    </div>
-    <div class="top-actions">
-      <span id="whoami" class="muted"></span>
-      <button id="btn-logout" class="btn ghost">Sign out</button>
-    </div>
-  </header>
+<footer class="site-footer">
+  MedFlow — local-first clinic management · <a href="/features">Features</a> ·
+  <a href="/security">Security</a> · <a href="/guide">Guide</a> ·
+  <a href="/login">Sign in</a>
+</footer>
 
-  <div class="shell">
-    <nav class="sidebar">
-      <button class="nav-btn active" data-view="dashboard">◧ Dashboard</button>
-      <button class="nav-btn" data-view="patients">👥 Patients</button>
-      <button class="nav-btn" data-view="appointments">🗓 Appointments</button>
-      <button class="nav-btn" data-view="activity">⧗ Activity</button>
-      <div class="spacer"></div>
-      <div id="perm-note" class="muted small"></div>
-    </nav>
-
-    <main id="main">
-
-      <!-- DASHBOARD -->
-      <section id="view-dashboard" class="view">
-        <h2>Today at a glance</h2>
-        <div class="stat-grid">
-          <div class="stat"><div class="stat-num" id="st-total">–</div><div class="muted">Patients</div></div>
-          <div class="stat"><div class="stat-num" id="st-week">–</div><div class="muted">New this week</div></div>
-          <div class="stat"><div class="stat-num" id="st-appts">–</div><div class="muted">Appointments today</div></div>
-          <div class="stat"><div class="stat-num" id="st-dx">–</div><div class="muted">Active diagnoses</div></div>
-          <div class="stat"><div class="stat-num" id="st-crit">–</div><div class="muted">Critical labs</div></div>
-        </div>
-        <div class="two-col">
-          <div class="card">
-            <h3>Next appointments</h3>
-            <table id="dash-appts" class="table"></table>
-          </div>
-          <div class="card">
-            <h3>Recent activity</h3>
-            <table id="dash-activity" class="table"></table>
-          </div>
-        </div>
-      </section>
-
-      <!-- PATIENTS -->
-      <section id="view-patients" class="view hidden">
-        <div class="row-between">
-          <h2>Patients</h2>
-          <button id="btn-new-patient" class="btn primary">＋ New patient</button>
-        </div>
-        <input id="patient-search" class="search" placeholder="Search by name, number, phone or diagnosis…">
-        <table id="patients-table" class="table"></table>
-      </section>
-
-      <!-- APPOINTMENTS -->
-      <section id="view-appointments" class="view hidden">
-        <div class="row-between">
-          <h2>Appointments</h2>
-          <button id="btn-new-appt" class="btn primary">＋ Schedule</button>
-        </div>
-        <table id="appts-table" class="table"></table>
-      </section>
-
-      <!-- ACTIVITY -->
-      <section id="view-activity" class="view hidden">
-        <h2>Activity</h2>
-        <table id="activity-table" class="table"></table>
-      </section>
-
-      <!-- PATIENT DETAIL -->
-      <section id="view-chart" class="view hidden">
-        <button class="btn ghost" id="btn-back">← Back to patients</button>
-        <div id="chart-head"></div>
-        <div class="two-col">
-          <div>
-            <div class="card">
-              <h3>Allergies</h3>
-              <ul id="chart-allergies" class="list"></ul>
-              <form class="inline-form" data-add="allergies">
-                <input name="substance" placeholder="Substance" required>
-                <input name="reaction" placeholder="Reaction">
-                <select name="severity">
-                  <option>mild</option><option>moderate</option>
-                  <option>severe</option><option selected>unknown</option>
-                </select>
-                <button class="btn">Add</button>
-              </form>
-            </div>
-            <div class="card">
-              <h3>Diagnoses</h3>
-              <ul id="chart-diagnoses" class="list"></ul>
-              <form class="inline-form" data-add="diagnoses">
-                <input name="description" placeholder="Diagnosis" required>
-                <input name="code" placeholder="Code (ICD)">
-                <select name="status">
-                  <option selected>active</option><option>chronic</option>
-                  <option>suspected</option><option>resolved</option>
-                </select>
-                <button class="btn">Add</button>
-              </form>
-            </div>
-            <div class="card">
-              <h3>Medications</h3>
-              <ul id="chart-medications" class="list"></ul>
-              <form class="inline-form" data-add="medications">
-                <input name="name" placeholder="Medication" required>
-                <input name="dose" placeholder="Dose">
-                <input name="frequency" placeholder="Frequency">
-                <button class="btn">Add</button>
-              </form>
-            </div>
-          </div>
-          <div>
-            <div class="card">
-              <h3>Vitals</h3>
-              <ul id="chart-vitals" class="list"></ul>
-              <form class="inline-form" data-add="vitals">
-                <input name="blood_pressure" placeholder="BP 120/80">
-                <input name="heart_rate" placeholder="HR">
-                <input name="temperature_c" placeholder="Temp °C">
-                <input name="oxygen_saturation" placeholder="SpO₂ %">
-                <button class="btn">Record</button>
-              </form>
-            </div>
-            <div class="card">
-              <h3>Lab results</h3>
-              <ul id="chart-lab_results" class="list"></ul>
-              <form class="inline-form" data-add="lab_results">
-                <input name="panel" placeholder="Panel (CBC)" required>
-                <input name="analyte" placeholder="Analyte" required>
-                <input name="value" placeholder="Value">
-                <input name="unit" placeholder="Unit">
-                <select name="flag">
-                  <option selected>normal</option><option>abnormal</option>
-                  <option>critical</option>
-                </select>
-                <button class="btn">Add</button>
-              </form>
-            </div>
-            <div class="card">
-              <h3>Clinical notes</h3>
-              <ul id="chart-notes" class="list"></ul>
-              <form class="inline-form" data-add="notes">
-                <select name="category">
-                  <option selected>progress</option><option>radiology</option>
-                  <option>pharmacy</option><option>discharge</option>
-                </select>
-                <input name="body" placeholder="Note…" required>
-                <button class="btn">Add</button>
-              </form>
-            </div>
-            <div class="card">
-              <h3>Timeline</h3>
-              <ul id="chart-timeline" class="list"></ul>
-            </div>
-          </div>
-        </div>
-        <div class="row-end">
-          <a id="chart-print" class="btn" target="_blank">🖨 Print chart</a>
-          <button id="btn-delete-patient" class="btn danger">Delete record</button>
-        </div>
-      </section>
-    </main>
-  </div>
-</div>
-
-<!-- ============================== DIALOGS ============================ -->
-<dialog id="dlg-patient">
-  <form method="dialog" id="form-patient" class="dlg-form">
-    <h3 id="dlg-patient-title">New patient</h3>
-    <div class="grid2">
-      <label>Full name<input name="name" required></label>
-      <label>Age<input name="age" type="number" min="0" max="130"></label>
-      <label>Sex
-        <select name="sex"><option value=""></option>
-          <option>female</option><option>male</option><option>other</option>
-        </select>
-      </label>
-      <label>Date of birth<input name="date_of_birth" type="date"></label>
-      <label>Phone<input name="phone"></label>
-      <label>Email<input name="email" type="email"></label>
-      <label>Blood pressure<input name="blood_pressure" placeholder="120/80"></label>
-      <label>Heart rate<input name="heart_rate" type="number"></label>
-      <label>Weight (kg)<input name="weight" type="number" step="0.1"></label>
-    </div>
-    <label>Medical history<textarea name="medical_history" rows="3"></textarea></label>
-    <label>Diagnosis<textarea name="diagnosis" rows="2"></textarea></label>
-    <label>Notes<textarea name="notes" rows="2"></textarea></label>
-    <p class="error hidden" id="form-patient-error"></p>
-    <div class="row-end">
-      <button value="cancel" class="btn ghost">Cancel</button>
-      <button value="ok" id="btn-save-patient" class="btn primary">Save patient</button>
-    </div>
-  </form>
-</dialog>
-
-<dialog id="dlg-appointment">
-  <form method="dialog" id="form-appointment" class="dlg-form">
-    <h3>Schedule appointment</h3>
-    <label>Patient ID<input name="patient_id" type="number" required placeholder="Patient #"></label>
-    <label>When<input name="scheduled_at" type="datetime-local" required></label>
-    <label>Provider<input name="provider"></label>
-    <label>Reason<input name="reason"></label>
-    <p class="error hidden" id="form-appointment-error"></p>
-    <div class="row-end">
-      <button value="cancel" class="btn ghost">Cancel</button>
-      <button value="ok" class="btn primary">Schedule</button>
-    </div>
-  </form>
-</dialog>
-
-<script src="/static/app.js"></script>
+<script src="/static/site.js"></script>
 </body>
 </html>

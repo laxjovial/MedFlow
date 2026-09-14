@@ -48,6 +48,23 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class SignupRequest(BaseModel):
+    username: str
+    display_name: str
+    password: str
+    email: str | None = None
+
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+
+
+class TempUserRequest(BaseModel):
+    label: str
+    hours: float = 24
+    patient_ids: list[int] = []
+
+
 class PatientCreate(BaseModel):
     name: str
     age: int | None = None
@@ -164,9 +181,15 @@ class SyncPush(BaseModel):
 
 
 def error_handler(request: Request, exc: MedFlowError) -> JSONResponse:
-    status = 404 if isinstance(exc, NotFoundError) else (
-        422 if isinstance(exc, ValidationError) else 400
-    )
+    from app.errors import AuthorizationError
+    if isinstance(exc, NotFoundError):
+        status = 404
+    elif isinstance(exc, ValidationError):
+        status = 422
+    elif isinstance(exc, AuthorizationError):
+        status = 403
+    else:
+        status = 400
     detail: dict = {"message": exc.message}
     if isinstance(exc, ValidationError):
         detail["fields"] = exc.errors
@@ -177,11 +200,13 @@ def error_handler(request: Request, exc: MedFlowError) -> JSONResponse:
 # factory
 
 
-def create_app(config: Config | None = None, db=None, repos=None) -> FastAPI:
+def create_app(config: Config | None = None, db=None, repos=None,
+               google_client_id: str | None = None) -> FastAPI:
     app = FastAPI(**OPENAPI_METADATA)
     app.state.config = config
     app.state.db = db
     app.state.repos = repos
+    app.state.google_client_id = google_client_id
     from app.services.reports import ReportsService
     app.state.report_service = ReportsService(repos) if repos else None
 
@@ -213,6 +238,106 @@ def create_app(config: Config | None = None, db=None, repos=None) -> FastAPI:
                 "permissions": sorted(security.permissions(user)),
             },
         }
+
+    @app.post("/api/auth/signup", status_code=201, tags=["auth"])
+    def signup(body: SignupRequest, request: Request = None):
+        """Open self-service registration.
+
+        The first account ever created becomes the administrator; everyone
+        after that signs up as a viewer pending staff promotion. Temporarily
+        closable via config for private deployments.
+        """
+        cfg = request.app.state.config
+        if cfg and not getattr(cfg, "allow_open_signup", True):
+            raise HTTPException(status_code=403, detail="Signup is disabled here")
+        from app.services.security import SecurityService
+        security = SecurityService(request.app.state.repos["users"])
+        try:
+            user = security.signup(body.username, body.display_name,
+                                   body.password, body.email)
+        except MedFlowError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        secret = request.app.state.token_secret
+        token = issue({"sub": user.user_id, "username": user.username,
+                       "role": user.role}, secret)
+        return {"token": token, "user": {
+            "id": user.user_id, "username": user.username,
+            "display_name": user.display_name, "role": user.role,
+            "permissions": sorted(security.permissions(user)),
+        }}
+
+    @app.get("/api/auth/config", tags=["auth"])
+    def auth_config(request: Request = None):
+        """Public: what the login/signup pages should render."""
+        cfg = request.app.state.config
+        return {
+            "google_enabled": request.app.state.google_client_id is not None,
+            "open_signup": bool(getattr(cfg, "allow_open_signup", True)) if cfg else True,
+        }
+
+    @app.post("/api/auth/google", tags=["auth"])
+    def google_login(body: GoogleLoginRequest, request: Request = None):
+        """Verify a Google ID token and sign in (or provision) the user."""
+        if not request.app.state.google_client_id:
+            raise HTTPException(status_code=501, detail="Google sign-in not configured")
+        from app.server.google import verify_google_token
+        info = verify_google_token(body.id_token, request.app.state.google_client_id)
+        from app.services.security import SecurityService
+        security = SecurityService(request.app.state.repos["users"])
+        try:
+            user = security.authenticate_google(
+                info["sub"], info["email"], info.get("name") or "")
+        except MedFlowError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+        secret = request.app.state.token_secret
+        token = issue({"sub": user.user_id, "username": user.username,
+                       "role": user.role}, secret)
+        return {"token": token, "user": {
+            "id": user.user_id, "username": user.username,
+            "display_name": user.display_name, "role": user.role,
+            "permissions": sorted(security.permissions(user)),
+        }}
+
+    # ------------------------------------------------- temporary access
+
+    @app.get("/api/temp-users", tags=["access"])
+    def list_temp_users(user=Depends(current_user), request: Request = None):
+        require(user, "users.manage")
+        return [{
+            "id": u.user_id, "username": u.username, "label": u.display_name,
+            "expires_at": u.expires_at, "active": u.active,
+            "patient_ids": u.scoped_patient_ids(),
+            "expired": u.is_expired(
+                __import__("app.utils.dates", fromlist=["to_iso"]).to_iso(
+                    __import__("app.utils.dates", fromlist=["utcnow"]).utcnow())),
+        } for u in request.app.state.repos["users"].list(active_only=False)
+          if u.role == "temporary"]
+
+    @app.post("/api/temp-users", status_code=201, tags=["access"])
+    def create_temp_user(body: TempUserRequest, user=Depends(current_user),
+                         request: Request = None):
+        require(user, "users.manage")
+        from app.services.security import SecurityService
+        security = SecurityService(request.app.state.repos["users"])
+        creator = request.app.state.repos["users"].get(user["sub"])
+        try:
+            guest, password = security.create_temporary_user(
+                creator, body.label, body.hours, body.patient_ids)
+        except MedFlowError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"username": guest.username, "password": password,
+                "expires_at": guest.expires_at, "label": guest.display_name}
+
+    @app.delete("/api/temp-users/{user_id}", tags=["access"])
+    def revoke_temp_user(user_id: int, user=Depends(current_user),
+                         request: Request = None):
+        require(user, "users.manage")
+        target = request.app.state.repos["users"].get(user_id)
+        if not target or target.role != "temporary":
+            raise HTTPException(status_code=404, detail="No such temporary user")
+        target.active = False
+        request.app.state.repos["users"].update(target, ["active"])
+        return {"ok": True}
 
     @app.get("/api/auth/me", tags=["auth"])
     def me(user=Depends(current_user)):
@@ -537,8 +662,31 @@ def create_app(config: Config | None = None, db=None, repos=None) -> FastAPI:
     if web_dir.exists():
         app.mount("/static", StaticFiles(directory=web_dir), name="static")
 
+        def _page(name: str):
+            def handler():
+                return HTMLResponse(
+                    (web_dir / name).read_text(encoding="utf-8"))
+            return handler
+
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)
         def index():
-            return (web_dir / "index.html").read_text(encoding="utf-8")
+            return _page("index.html")()
+
+        app.get("/features", response_class=HTMLResponse,
+                include_in_schema=False)(_page("features.html"))
+        app.get("/security", response_class=HTMLResponse,
+                include_in_schema=False)(_page("security.html"))
+        app.get("/guide", response_class=HTMLResponse,
+                include_in_schema=False)(_page("guide.html"))
+        app.get("/login", response_class=HTMLResponse,
+                include_in_schema=False)(_page("login.html"))
+        app.get("/signup", response_class=HTMLResponse,
+                include_in_schema=False)(_page("signup.html"))
+        app.get("/app", response_class=HTMLResponse,
+                include_in_schema=False)(_page("app.html"))
+
+        @app.get("/auth/google/client-id", include_in_schema=False)
+        def google_client_id_endpoint():
+            return {"client_id": app.state.google_client_id or ""}
 
     return app

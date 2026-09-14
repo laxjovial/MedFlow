@@ -8,6 +8,7 @@ no external services: a clinic starts its web face with one command.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -57,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     from app.server.app import create_app
     from app.server.tokens import load_or_create_secret
 
-    app = create_app(config=config, db=db, repos=repos)
+    app = create_app(config=config, db=db, repos=repos,
+                     google_client_id=os.environ.get("MEDFLOW_GOOGLE_CLIENT_ID"))
     app.state.token_secret = load_or_create_secret(
         Path(config.resolve_data_dir(data_dir.parent)) / ".token_secret"
     )

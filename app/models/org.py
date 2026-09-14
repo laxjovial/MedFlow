@@ -22,8 +22,9 @@ ROLE_NURSE = "nurse"
 ROLE_TECHNICIAN = "technician"
 ROLE_RECEPTION = "reception"
 ROLE_VIEWER = "viewer"
+ROLE_TEMPORARY = "temporary"
 ALL_ROLES = (ROLE_ADMIN, ROLE_PHYSICIAN, ROLE_NURSE, ROLE_TECHNICIAN,
-             ROLE_RECEPTION, ROLE_VIEWER)
+             ROLE_RECEPTION, ROLE_VIEWER, ROLE_TEMPORARY)
 
 
 @serializable("created_at")
@@ -41,16 +42,38 @@ class Unit:
 @serializable(None)
 @dataclass
 class User:
-    """A staff account. Roles are coarse; permissions refine them later."""
+    """An account: staff member or temporary, scoped visitor.
+
+    Temporary accounts carry ``expires_at`` (ISO timestamp after which
+    login is refused) and ``scope_patient_ids`` (JSON list limiting which
+    patients they may see — empty/None means no patient access).
+    ``auth_provider`` distinguishes password accounts from Google ones.
+    """
 
     username: str
     display_name: str
     role: str = ROLE_VIEWER
     unit_id: int | None = None
     password_hash: str | None = None
+    email: str | None = None
+    auth_provider: str = "password"
+    expires_at: str | None = None
+    scope_patient_ids: str | None = None
     active: bool = True
     created_at: datetime | None = None
     user_id: int | None = None
+
+    def is_expired(self, now_iso: str) -> bool:
+        return bool(self.expires_at and self.expires_at <= now_iso)
+
+    def scoped_patient_ids(self) -> list[int]:
+        import json
+        if not self.scope_patient_ids:
+            return []
+        try:
+            return [int(x) for x in json.loads(self.scope_patient_ids)]
+        except (ValueError, TypeError):
+            return []
 
 
 @serializable("registered_at")

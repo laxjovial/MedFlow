@@ -16,7 +16,16 @@ log = get_logger("storage.migrations")
 
 # Future migrations append here: (target_version, callable(conn)).
 # Each entry must bring the database from target_version - 1 to target_version.
-MIGRATIONS: list[tuple[int, "callable"]] = []
+MIGRATIONS: list[tuple[int, "callable"]] = [
+    # v1 -> v2: Google identities, self-service signup, temporary scoped users
+    (2, lambda conn: (
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT"),
+        conn.execute("ALTER TABLE users ADD COLUMN auth_provider TEXT "
+                     "NOT NULL DEFAULT 'password'"),
+        conn.execute("ALTER TABLE users ADD COLUMN expires_at TEXT"),
+        conn.execute("ALTER TABLE users ADD COLUMN scope_patient_ids TEXT"),
+    )),
+]
 
 
 def get_user_version(conn: sqlite3.Connection) -> int:

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MedFlow — Clinic Workspace</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div id="login-gate" class="auth-wrap">
+  <div class="auth-card">
+    <div class="brand">
+      <div class="brand-mark">M</div>
+      <div><h1>Sign in required</h1><p class="muted">This workspace is for signed-in staff.</p></div>
+    </div>
+    <a class="btn primary full" href="/login">Go to sign in</a>
+  </div>
+</div>
+
+<div id="app-view" class="hidden">
+  <header class="topbar">
+    <div class="small-brand">
+      <div class="brand-mark">M</div>
+      <strong>MedFlow</strong>
+      <span id="facility-label" class="muted"></span>
+    </div>
+    <div class="top-actions">
+      <span id="whoami" class="muted"></span>
+      <button id="btn-logout" class="btn ghost">Sign out</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="sidebar wide" id="side">
+      <button class="side-toggle" id="side-collapse">◀ Hide menu</button>
+      <button class="nav-btn active" data-view="dashboard">◧ Dashboard</button>
+      <button class="nav-btn" data-view="patients">👥 Patients</button>
+      <button class="nav-btn" data-view="appointments">🗓 Appointments</button>
+      <button class="nav-btn" data-view="access" id="nav-access">🗝 Access</button>
+      <button class="nav-btn" data-view="activity">⧗ Activity</button>
+      <div class="spacer"></div>
+      <div id="perm-note" class="muted small" style="padding:0 10px"></div>
+    </nav>
+
+    <main id="main">
+
+      <section id="view-dashboard" class="view">
+        <h2>Today at a glance</h2>
+        <div class="stat-grid">
+          <div class="stat"><div class="stat-num" id="st-total">–</div><div class="muted">Patients</div></div>
+          <div class="stat"><div class="stat-num" id="st-week">–</div><div class="muted">New this week</div></div>
+          <div class="stat"><div class="stat-num" id="st-appts">–</div><div class="muted">Appointments today</div></div>
+          <div class="stat"><div class="stat-num" id="st-dx">–</div><div class="muted">Active diagnoses</div></div>
+          <div class="stat"><div class="stat-num" id="st-crit">–</div><div class="muted">Critical labs</div></div>
+        </div>
+        <div class="two-col">
+          <div class="card"><h3>Next appointments</h3><table id="dash-appts" class="table"></table></div>
+          <div class="card"><h3>Recent activity</h3><table id="dash-activity" class="table"></table></div>
+        </div>
+      </section>
+
+      <section id="view-patients" class="view hidden">
+        <div class="row-between">
+          <h2>Patients</h2>
+          <button id="btn-new-patient" class="btn primary">＋ New patient</button>
+        </div>
+        <input id="patient-search" class="search" style="width:100%;padding:11px 14px;margin-bottom:14px;border-radius:10px;border:1px solid var(--line)" placeholder="Search by name, number, phone or diagnosis…">
+        <table id="patients-table" class="table"></table>
+      </section>
+
+      <section id="view-appointments" class="view hidden">
+        <div class="row-between">
+          <h2>Appointments</h2>
+          <button id="btn-new-appt" class="btn primary">＋ Schedule</button>
+        </div>
+        <table id="appts-table" class="table"></table>
+      </section>
+
+      <section id="view-access" class="view hidden">
+        <h2>Temporary access</h2>
+        <p class="muted">Create a scoped, time-limited account for a visitor. They will see
+           only the patients you pick, and only until the window closes.</p>
+        <div class="card">
+          <h3>Create guest access</h3>
+          <form id="temp-form" class="inline-form">
+            <input name="label" placeholder="Who is it for?" required>
+            <input name="hours" type="number" min="1" max="720" value="24" style="max-width:110px" title="Hours of access">
+            <input name="patient_ids" placeholder="Patient IDs, e.g. 1,3" required>
+            <button class="btn primary">Create</button>
+          </form>
+          <p class="muted small">Find patient IDs in the directory (the numeric part of e.g. MF-000004).</p>
+          <div id="temp-credential" class="hidden" style="margin-top:12px">
+            <div class="code" id="temp-credential-text"></div>
+            <p class="ok small">Share these now — the password is shown only once.</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Active guest accounts</h3>
+          <table id="temp-table" class="table"></table>
+        </div>
+      </section>
+
+      <section id="view-activity" class="view hidden">
+        <h2>Activity</h2>
+        <table id="activity-table" class="table"></table>
+      </section>
+
+      <section id="view-chart" class="view hidden">
+        <button class="btn ghost" id="btn-back">← Back to patients</button>
+        <div id="chart-head"></div>
+        <div class="two-col">
+          <div>
+            <div class="card">
+              <h3>Allergies</h3><ul id="chart-allergies" class="list"></ul>
+              <form class="inline-form" data-add="allergies">
+                <input name="substance" placeholder="Substance" required>
+                <input name="reaction" placeholder="Reaction">
+                <select name="severity"><option>mild</option><option>moderate</option><option>severe</option><option selected>unknown</option></select>
+                <button class="btn">Add</button>
+              </form>
+            </div>
+            <div class="card">
+              <h3>Diagnoses</h3><ul id="chart-diagnoses" class="list"></ul>
+              <form class="inline-form" data-add="diagnoses">
+                <input name="description" placeholder="Diagnosis" required>
+                <input name="code" placeholder="Code (ICD)">
+                <select name="status"><option selected>active</option><option>chronic</option><option>suspected</option><option>resolved</option></select>
+                <button class="btn">Add</button>
+              </form>
+            </div>
+            <div class="card">
+              <h3>Medications</h3><ul id="chart-medications" class="list"></ul>
+              <form class="inline-form" data-add="medications">
+                <input name="name" placeholder="Medication" required>
+                <input name="dose" placeholder="Dose">
+                <input name="frequency" placeholder="Frequency">
+                <button class="btn">Add</button>
+              </form>
+            </div>
+          </div>
+          <div>
+            <div class="card">
+              <h3>Vitals</h3><ul id="chart-vitals" class="list"></ul>
+              <form class="inline-form" data-add="vitals">
+                <input name="blood_pressure" placeholder="BP 120/80">
+                <input name="heart_rate" placeholder="HR">
+                <input name="temperature_c" placeholder="Temp °C">
+                <input name="oxygen_saturation" placeholder="SpO₂ %">
+                <button class="btn">Record</button>
+              </form>
+            </div>
+            <div class="card">
+              <h3>Lab results</h3><ul id="chart-lab_results" class="list"></ul>
+              <form class="inline-form" data-add="lab_results">
+                <input name="panel" placeholder="Panel (CBC)" required>
+                <input name="analyte" placeholder="Analyte" required>
+                <input name="value" placeholder="Value">
+                <input name="unit" placeholder="Unit">
+                <select name="flag"><option selected>normal</option><option>abnormal</option><option>critical</option></select>
+                <button class="btn">Add</button>
+              </form>
+            </div>
+            <div class="card">
+              <h3>Clinical notes</h3><ul id="chart-notes" class="list"></ul>
+              <form class="inline-form" data-add="notes">
+                <select name="category"><option selected>progress</option><option>radiology</option><option>pharmacy</option><option>discharge</option></select>
+                <input name="body" placeholder="Note…" required>
+                <button class="btn">Add</button>
+              </form>
+            </div>
+            <div class="card">
+              <h3>Timeline</h3><ul id="chart-timeline" class="list"></ul>
+            </div>
+          </div>
+        </div>
+        <div class="row-end">
+          <a id="chart-print" class="btn" target="_blank">🖨 Print chart</a>
+          <button id="btn-delete-patient" class="btn danger">Delete record</button>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<dialog id="dlg-patient">
+  <form method="dialog" id="form-patient" class="dlg-form">
+    <h3 id="dlg-patient-title">New patient</h3>
+    <div class="grid2">
+      <label>Full name<input name="name" required></label>
+      <label>Age<input name="age" type="number" min="0" max="130"></label>
+      <label>Sex<select name="sex"><option value=""></option><option>female</option><option>male</option><option>other</option></select></label>
+      <label>Date of birth<input name="date_of_birth" type="date"></label>
+      <label>Phone<input name="phone"></label>
+      <label>Email<input name="email" type="email"></label>
+      <label>Blood pressure<input name="blood_pressure" placeholder="120/80"></label>
+      <label>Heart rate<input name="heart_rate" type="number"></label>
+      <label>Weight (kg)<input name="weight" type="number" step="0.1"></label>
+    </div>
+    <label>Medical history<textarea name="medical_history" rows="3"></textarea></label>
+    <label>Diagnosis<textarea name="diagnosis" rows="2"></textarea></label>
+    <label>Notes<textarea name="notes" rows="2"></textarea></label>
+    <p class="error hidden" id="form-patient-error"></p>
+    <div class="row-end">
+      <button value="cancel" class="btn ghost">Cancel</button>
+      <button value="ok" id="btn-save-patient" class="btn primary">Save patient</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-appointment">
+  <form method="dialog" id="form-appointment" class="dlg-form">
+    <h3>Schedule appointment</h3>
+    <label>Patient ID<input name="patient_id" type="number" required placeholder="Patient #"></label>
+    <label>When<input name="scheduled_at" type="datetime-local" required></label>
+    <label>Provider<input name="provider"></label>
+    <label>Reason<input name="reason"></label>
+    <p class="error hidden" id="form-appointment-error"></p>
+    <div class="row-end">
+      <button value="cancel" class="btn ghost">Cancel</button>
+      <button value="ok" class="btn primary">Schedule</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/workspace.js"></script>
+</body>
+</html>

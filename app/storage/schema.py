@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -27,6 +27,10 @@ TABLES: tuple[str, ...] = (
         role TEXT NOT NULL DEFAULT 'viewer',
         unit_id INTEGER REFERENCES units(unit_id),
         password_hash TEXT,
+        email TEXT,
+        auth_provider TEXT NOT NULL DEFAULT 'password',
+        expires_at TEXT,
+        scope_patient_ids TEXT,
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT
     )

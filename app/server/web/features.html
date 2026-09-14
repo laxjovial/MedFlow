@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Features — MedFlow</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div id="sidebar-root"></div>
+
+<header class="site-header">
+  <a class="brand" href="/"><div class="brand-mark">M</div><span class="brand-name">MedFlow</span></a>
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a href="/features" class="active">Features</a>
+    <a href="/security">Security</a>
+    <a href="/guide">How to use</a>
+  </nav>
+  <div class="site-cta">
+    <a class="btn ghost" href="/login">Sign in</a>
+    <a class="btn primary" href="/signup">Get started</a>
+    <button class="menu-btn" aria-label="Open menu">☰</button>
+  </div>
+</header>
+
+<div class="page">
+  <h1>Everything in the box</h1>
+  <p class="muted">One codebase serves the desktop app, the web workspace, and the API —
+     the features below cut across all three.</p>
+
+  <h2 class="section-title">Patients & charting</h2>
+  <table class="docs-table">
+    <tr><th>Capability</th><th>What you get</th></tr>
+    <tr><td>Instant search</td><td>By patient number, name, phone, or diagnosis — as you type, in both faces</td></tr>
+    <tr><td>Stable patient numbers</td><td><code>MF-000042</code>, never reused even after deletion</td></tr>
+    <tr><td>Structured chart</td><td>Vitals, diagnoses, medications, allergies, lab results, clinical notes — inline entry per section</td></tr>
+    <tr><td>Clinical timeline</td><td>Every action appends a narrative entry per patient</td></tr>
+    <tr><td>Validation</td><td>Age/DOB cross-checks, BP format and physiologic ranges, phone/email formats — enforced in UI, services, and API</td></tr>
+    <tr><td>Soft delete + recycle bin</td><td>Deletion is recoverable, and the audit trail records who deleted what</td></tr>
+  </table>
+
+  <h2 class="section-title">Front desk</h2>
+  <table class="docs-table">
+    <tr><th>Capability</th><th>What you get</th></tr>
+    <tr><td>Appointments</td><td>Schedule with provider, reason, duration; today/upcoming scopes</td></tr>
+    <tr><td>Lifecycle</td><td>scheduled → checked in → in progress → completed, plus no-show; each step lands on the timeline</td></tr>
+    <tr><td>Dashboard</td><td>Patients, new-this-week, appointments today, active diagnoses, critical labs</td></tr>
+  </table>
+
+  <h2 class="section-title">Data ownership & movement</h2>
+  <table class="docs-table">
+    <tr><th>Capability</th><th>What you get</th></tr>
+    <tr><td>Backups</td><td>One-click consistent SQLite snapshots, integrity-checked, restorable, pruned automatically</td></tr>
+    <tr><td>Exports</td><td>CSV/JSON for every dataset; printable HTML patient charts</td></tr>
+    <tr><td>Bulk import</td><td>Any CSV with a header row, per-row validation reporting</td></tr>
+    <tr><td>Facility transfer</td><td>Checksummed <code>.medflow.json</code> bundles; import as new or supervised merge</td></tr>
+    <tr><td>Device sync</td><td>Offline-first push/pull with per-field conflict detection</td></tr>
+  </table>
+
+  <h2 class="section-title">People & access</h2>
+  <table class="docs-table">
+    <tr><th>Capability</th><th>What you get</th></tr>
+    <tr><td>Sign-in options</td><td>Password or Google — same account system in the desktop app and the web</td></tr>
+    <tr><td>Self-service signup</td><td>First account becomes administrator; later ones start as viewers pending promotion</td></tr>
+    <tr><td>Roles</td><td>Administrator, physician, nurse, technician, reception, viewer — enforced in menus, buttons, and API routes</td></tr>
+    <tr><td>Temporary visitors</td><td>Scoped, time-limited guest accounts that see only the patients you pick, for exactly as long as you allow</td></tr>
+    <tr><td>Audit trail</td><td>Logins, changes, exports, transfers — with actor, device, timestamp; filterable and exportable</td></tr>
+  </table>
+
+  <div class="banner">
+    <div><h3>See it in five minutes</h3><p>Create an account, register a patient, chart a visit.</p></div>
+    <a class="btn" href="/signup">Get started</a>
+  </div>
+</div>
+
+<footer class="site-footer">
+  MedFlow — local-first clinic management · <a href="/">Home</a> ·
+  <a href="/security">Security</a> · <a href="/guide">Guide</a>
+</footer>
+
+<script src="/static/site.js"></script>
+</body>
+</html>

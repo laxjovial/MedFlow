@@ -79,6 +79,18 @@ class SettingsView(ctk.CTkFrame):
         self.bin_list = ctk.CTkFrame(bin_, fg_color="transparent")
         self.bin_list.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 12))
 
+        # ------------------------------------------------ temporary access
+        if "users.manage" in app.permissions:
+            temp = Section(scroll, "Temporary access (scoped visitors)")
+            temp.pack(fill="x", pady=(0, 12))
+            trow = ctk.CTkFrame(temp, fg_color="transparent")
+            trow.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 6))
+            ctk.CTkButton(trow, text="＋  Grant temporary access", font=F_BOLD,
+                          height=34, command=self._grant_temp).pack(side="left")
+            self.temp_list = ctk.CTkFrame(temp, fg_color="transparent")
+            self.temp_list.grid(row=2, column=0, sticky="ew", padx=12,
+                                pady=(0, 12))
+
         # ---------------------------------------------------------- staff
         if "users.manage" in app.permissions:
             staff = Section(scroll, "Staff accounts")
@@ -124,6 +136,33 @@ class SettingsView(ctk.CTkFrame):
     # ------------------------------------------------------------------ #
 
     def refresh_lists(self) -> None:
+        if hasattr(self, "temp_list"):
+            for w in self.temp_list.winfo_children():
+                w.destroy()
+            from app.utils.dates import to_iso, utcnow
+            now = to_iso(utcnow())
+            guests = [u for u in self.app.org.list_users()
+                      if u.role == "temporary"]
+            if not guests:
+                ctk.CTkLabel(self.temp_list, text="No temporary accounts",
+                             font=F_SMALL, text_color=MUTED,
+                             anchor="w").pack(fill="x")
+            for g in guests:
+                row = ctk.CTkFrame(self.temp_list, fg_color="transparent")
+                row.pack(fill="x", pady=1)
+                state = ("expired" if g.is_expired(now)
+                         else ("active" if g.active else "revoked"))
+                ctk.CTkLabel(row, text=f"{g.display_name} ({g.username}) — "
+                                       f"{len(g.scoped_patient_ids())} patient(s), "
+                                       f"{state}, until {g.expires_at}",
+                             font=F_SMALL, anchor="w").pack(side="left")
+                if g.active and not g.is_expired(now):
+                    ctk.CTkButton(row, text="Revoke", font=F_SMALL, height=26,
+                                  width=80, fg_color="#FDECEA",
+                                  hover_color="#F8D7D4", text_color=DANGER,
+                                  command=lambda uid=g.user_id:
+                                  self._revoke_temp(uid)).pack(side="right")
+
         for w in self.backup_list.winfo_children():
             w.destroy()
         for b in self.app.backups.list_backups()[:6]:
@@ -186,6 +225,36 @@ class SettingsView(ctk.CTkFrame):
 
     # ------------------------------------------------------------------ #
 
+    def _grant_temp(self) -> None:
+        fields = [
+            FormField("label", "Who is it for?", required=True),
+            FormField("hours", "Hours of access", required=True,
+                      placeholder="e.g. 24"),
+            FormField("patient_ids", "Patient IDs (comma-separated)",
+                      required=True, placeholder="e.g. 1,3,7"),
+        ]
+        FormDialog(self, "Grant temporary access", fields,
+                   self._submit_temp, submit_text="Create access")
+
+    def _submit_temp(self, values: dict) -> None:
+        try:
+            hours = float(values["hours"])
+        except (TypeError, ValueError):
+            raise ValueError("Hours must be a number.")
+        try:
+            ids = [int(x) for x in (values["patient_ids"] or "").replace(" ", "").split(",")
+                   if x]
+        except ValueError:
+            raise ValueError("Patient IDs must be numbers separated by commas.")
+        guest, password = self.app.security.create_temporary_user(
+            self.app.user, values["label"], hours, ids)
+        self.app.confirm(
+            "Temporary access created",
+            f"Username: {guest.username}\nPassword: {password}\n"
+            f"Expires: {guest.expires_at}\n\n"
+            "Write these down now — the password is not shown again.")
+        self.refresh_lists()
+
     def _set_theme(self, value: str) -> None:
         self.app.set_theme(value)
 
@@ -227,6 +296,14 @@ class SettingsView(ctk.CTkFrame):
     def _restore_patient(self, patient_id: int) -> None:
         self.app.patients.restore(patient_id)
         self.app.toast("Record restored", "ok")
+        self.refresh_lists()
+
+    def _revoke_temp(self, user_id: int) -> None:
+        user = self.app.repos["users"].get(user_id)
+        if user:
+            user.active = False
+            self.app.repos["users"].update(user, ["active"])
+            self.app.toast("Access revoked", "ok")
         self.refresh_lists()
 
     def _add_user(self) -> None:

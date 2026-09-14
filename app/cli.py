@@ -120,11 +120,9 @@ def cmd_export(args) -> int:
 
 def cmd_import_patients(args) -> int:
     from app.services.patients import PatientService
-    from app.validation import PatientValidator
 
     config, db, repos = _connect(Path(args.data_dir), args.db)
     service = PatientService(repos, actor=args.actor or "import")
-    validator = PatientValidator()
 
     created, failed = 0, []
     with open(args.file, newline="", encoding="utf-8") as handle:

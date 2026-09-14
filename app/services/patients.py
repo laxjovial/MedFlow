@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from app.errors import DuplicatePatientError, NotFoundError
+from app.errors import AuthorizationError, DuplicatePatientError, NotFoundError
 from app.models import (
     AuditEvent,
     Patient,
@@ -30,11 +30,13 @@ class PatientService:
     """All patient workflows in one permission-checked place."""
 
     def __init__(self, repos, validator: PatientValidator | None = None,
-                 actor: str = "system", device_id: str = "workstation-01"):
+                 actor: str = "system", device_id: str = "workstation-01",
+                 temporary_user=None):
         self.repos = repos
         self.validator = validator or PatientValidator()
         self.actor = actor
         self.device_id = device_id
+        self.temporary_user = temporary_user
 
     # ------------------------------------------------------------------ #
     # helpers
@@ -56,12 +58,18 @@ class PatientService:
     # queries
 
     def search(self, query: str = "", limit: int = 200) -> list[PatientSummary]:
-        return self.repos["patients"].search(query, limit=limit)
+        scope = self._scope_ids()
+        if scope is None:
+            return self.repos["patients"].search(query, limit=limit)
+        if not scope:
+            return []
+        return self.repos["patients"].search_scoped(scope, query, limit)
 
     def get(self, patient_id: int) -> Patient:
         patient = self.repos["patients"].get(patient_id)
         if not patient:
             raise NotFoundError(f"Patient #{patient_id} does not exist.")
+        self._check_scope(patient_id)
         self._audit(EVENT_VIEWED, "patient", patient.patient_number)
         return patient
 
@@ -69,7 +77,23 @@ class PatientService:
         patient = self.repos["patients"].get_by_number(patient_number)
         if not patient:
             raise NotFoundError(f"Patient {patient_number} does not exist.")
+        self._check_scope(patient.patient_id)
         return patient
+
+    # ------------------------------------------------------------------ #
+    # scope (temporary users)
+
+    def _scope_ids(self) -> list[int] | None:
+        """None = unscoped (staff); [] or list = restricted to those ids."""
+        if self.temporary_user is None:
+            return None
+        return self.temporary_user.scoped_patient_ids()
+
+    def _check_scope(self, patient_id: int) -> None:
+        scope = self._scope_ids()
+        if scope is not None and patient_id not in scope:
+            raise AuthorizationError(
+                "This record is outside your granted access.")
 
     def count(self) -> int:
         return self.repos["patients"].count()
