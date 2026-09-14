@@ -8,6 +8,7 @@ timeout absorbs the brief lock contention typical of a clinic desk.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from app.storage.migrations import migrate
@@ -36,30 +37,50 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 
 
 class Database:
-    """Thin holder for a process-wide connection.
+    """Thread-safe holder for per-thread SQLite connections.
 
-    SQLite in WAL mode happily serves the concurrent readers a desktop UI
-    and an API server generate. Writes are short transactions.
+    The desktop UI and the API server both call services from worker
+    threads, and a raw sqlite3 connection refuses cross-thread use. Each
+    thread therefore gets its own connection (WAL mode serves concurrent
+    readers happily; the busy timeout absorbs write contention), created
+    lazily and reused for the thread's lifetime.
     """
+
+    _DML_PREFIXES = ("INSERT", "UPDATE", "DELETE", "REPLACE")
 
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
-        self._conn: sqlite3.Connection | None = None
+        self._local = threading.local()
+        self._write_lock = threading.RLock()
 
     def connection(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = connect(self.db_path)
-        return self._conn
-
-    def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-
-    # Convenience passthroughs used by small repositories and tests.
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = connect(self.db_path)
+            self._local.conn = conn
+        return conn
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        return self.connection().execute(sql, params)
+        """Run one statement; writes commit immediately and are serialized.
+
+        Repositories never call COMMIT themselves, so durability lives here:
+        every DML statement is committed before returning (WAL keeps this
+        cheap) and a process-wide lock serializes writers so concurrent
+        threads cannot interleave half-finished operations.
+        """
+        conn = self.connection()
+        with self._write_lock:
+            cur = conn.execute(sql, params)
+            if sql.lstrip().upper().startswith(self._DML_PREFIXES):
+                conn.commit()
+            return cur
+
+    def close(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
     def commit(self) -> None:
+        """Explicit commit for multi-statement service transactions."""
         self.connection().commit()
