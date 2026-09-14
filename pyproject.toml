@@ -1,0 +1,12 @@
+[project]
+name = "medflow"
+version = "2.0.0"
+description = "Native desktop patient management system with a layered, storage-agnostic architecture"
+requires-python = ">=3.10"
+dependencies = ["customtkinter>=5.2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+markers = ["integration: tests that exercise the database layer end to end"]

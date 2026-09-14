@@ -12,3 +12,4 @@ argon2-cffi>=23.1
 
 # --- development ---
 pytest>=8.0
+pyinstaller>=6.0 ; python_version >= "3.11"
