@@ -98,6 +98,15 @@ class PatientRepository(_Repository):
         params.append(limit)
         return [PatientSummary.from_row(r) for r in self._query_all(sql, params)]
 
+    def deleted_summaries(self) -> list[PatientSummary]:
+        """Soft-deleted patients, most recently active first (recycle bin)."""
+        rows = self._query_all(
+            "SELECT patient_id, patient_number, name, age, diagnosis, "
+            "updated_at, version FROM patients WHERE deleted = 1 "
+            "ORDER BY updated_at DESC LIMIT 500"
+        )
+        return [PatientSummary.from_row(r) for r in rows]
+
     def count(self, include_deleted: bool = False) -> int:
         sql = f"SELECT COUNT(*) AS c FROM {self.table}"
         if not include_deleted:
