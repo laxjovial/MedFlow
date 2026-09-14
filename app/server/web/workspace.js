@@ -69,6 +69,8 @@ function enterApp() {
   $("#btn-delete-patient").classList.toggle("hidden", !perms.has("patients.delete"));
   $("#btn-new-appt").classList.toggle("hidden", !perms.has("appointments.manage"));
   $("#nav-access").classList.toggle("hidden", !perms.has("users.manage"));
+  $("#nav-settings").classList.toggle("hidden", !perms.has("settings.manage") && !perms.has("export.data"));
+  $("#btn-pair-desktop").classList.toggle("hidden", temporary);
   $("#perm-note").textContent = temporary
     ? `temporary access${state.user.expires_at ? " until " + state.user.expires_at.replace("T", " ") : ""}`
     : perms.size ? `${perms.size} permissions` : "read-only session";
@@ -93,6 +95,8 @@ $$(".nav-btn").forEach(btn =>
     if (btn.dataset.view === "dashboard") loadDashboard();
     if (btn.dataset.view === "patients") loadPatients();
     if (btn.dataset.view === "appointments") loadAppointments();
+    if (btn.dataset.view === "reports") loadReports();
+    if (btn.dataset.view === "settings") loadSettings();
     if (btn.dataset.view === "access") loadTempUsers();
     if (btn.dataset.view === "activity") loadActivity();
   }));
@@ -291,6 +295,222 @@ async function loadActivity() {
     toast(err.message);
   }
 }
+
+/* ------------------------------------------------------------------ reports */
+
+async function loadReports() {
+  try {
+    const [dx, prov] = await Promise.all([
+      api("/reports/diagnoses"), api("/reports/appointments"),
+    ]);
+    fillTable($("#reports-dx"), (dx.rows || dx.top_diagnoses || []).slice(0, 8), [
+      [null, "Diagnosis", r => r.diagnosis || r[0] || "Unspecified"],
+      [null, "Patients", r => r.count ?? r[1] ?? "—"],
+    ]);
+    fillTable($("#reports-prov"), (prov.rows || prov.workload || []).slice(0, 8), [
+      [null, "Provider", r => r.provider || r[0] || "—"],
+      [null, "Appointments", r => r.appointments ?? r[1] ?? "—"],
+      [null, "Completed", r => r.completed ?? r[2] ?? "—"],
+    ]);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+/* authorized downloads: fetch with the Bearer token, then save the blob */
+$$("#export-row [data-export]").forEach(btn =>
+  btn.addEventListener("click", async () => {
+    const name = btn.dataset.export, fmt = btn.dataset.fmt;
+    try {
+      const res = await fetch(`/api/export/${name}.${fmt}`, {
+        headers: { Authorization: `Bearer ${state.token}` },
+      });
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `medflow_${name}.${fmt}`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (err) {
+      toast(err.message);
+    }
+  }));
+
+/* ------------------------------------------------------------------ settings */
+
+async function loadSettings() {
+  api("/health").then(h =>
+    $("#settings-facility").textContent =
+      `${h.facility} — ${h.patients} patient record(s)`).catch(() => {});
+  loadBackups();
+  loadBin();
+  const perms = new Set(state.user.permissions || []);
+  if (perms.has("users.manage")) loadStaff();
+  if (perms.has("settings.manage")) loadRules();
+}
+
+async function loadBackups() {
+  try {
+    const backups = await api("/backups");
+    fillTable($("#backups-table"), backups.slice(0, 6), [
+      ["name", "Snapshot"],
+      ["size_display", "Size"],
+    ]);
+  } catch (err) {
+    fillTable($("#backups-table"), [], [["", ""]]);
+  }
+}
+
+$("#btn-backup-now").addEventListener("click", async () => {
+  try {
+    const r = await api("/backups", { method: "POST" });
+    toast(`Backup saved: ${r.created}`, "ok");
+    loadBackups();
+  } catch (err) { toast(err.message); }
+});
+
+$("#btn-backup-prune").addEventListener("click", async () => {
+  try {
+    const r = await api("/backups/prune", { method: "POST" });
+    toast(`Removed ${r.removed} old backup(s)`, "ok");
+    loadBackups();
+  } catch (err) { toast(err.message); }
+});
+
+async function loadBin() {
+  try {
+    const rows = await api("/patients/deleted");
+    fillTable($("#bin-table"), rows, [
+      ["patient_number", "No"],
+      ["name", "Name"],
+      [null, "", () => ""],
+    ]);
+    $$("#bin-table tbody tr").forEach((tr, i) => {
+      const cell = tr.lastElementChild;
+      if (rows[i] && !tr.querySelector("td[colspan]")) {
+        const btn = document.createElement("button");
+        btn.className = "btn";
+        btn.textContent = "Restore";
+        btn.style.padding = "4px 10px";
+        btn.addEventListener("click", async () => {
+          try {
+            await api(`/patients/${rows[i].patient_id}/restore`, { method: "POST" });
+            toast("Record restored", "ok");
+            loadBin();
+          } catch (err) { toast(err.message); }
+        });
+        cell.appendChild(btn);
+      }
+    });
+  } catch (err) {
+    fillTable($("#bin-table"), [], [["", ""]]);
+  }
+}
+
+async function loadStaff() {
+  try {
+    const users = await api("/org/users");
+    fillTable($("#staff-table"), users, [
+      ["username", "Username"],
+      ["display_name", "Name"],
+      ["role", "Role"],
+      [null, "State", r => r.active ? "active" : "disabled"],
+      [null, "", () => ""],
+    ]);
+    $$("#staff-table tbody tr").forEach((tr, i) => {
+      const u = users[i];
+      if (u && !tr.querySelector("td[colspan]")) {
+        const cell = tr.lastElementChild;
+        const btn = document.createElement("button");
+        btn.className = "btn";
+        btn.style.padding = "4px 10px";
+        btn.textContent = u.active ? "Disable" : "Enable";
+        btn.addEventListener("click", async () => {
+          try {
+            await api(`/org/users/${u.id}`, {
+              method: "PATCH", body: JSON.stringify({ active: !u.active }),
+            });
+            loadStaff();
+          } catch (err) { toast(err.message); }
+        });
+        cell.appendChild(btn);
+      }
+    });
+  } catch (err) {
+    fillTable($("#staff-table"), [], [["", ""]]);
+  }
+}
+
+async function loadRules() {
+  try {
+    const rules = await api("/automation/rules");
+    fillTable($("#rules-table"), rules, [
+      ["name", "Rule"],
+      ["fact", "Watch"],
+      [null, "Condition", r => `${r.operator} ${r.threshold}`],
+      ["action", "Action"],
+      [null, "Last run", r => r.last_run_result || "never"],
+      [null, "", () => ""],
+    ]);
+    $$("#rules-table tbody tr").forEach((tr, i) => {
+      const rule = rules[i];
+      if (rule && !tr.querySelector("td[colspan]")) {
+        const cell = tr.lastElementChild;
+        const btn = document.createElement("button");
+        btn.className = "btn danger";
+        btn.textContent = "Delete";
+        btn.style.padding = "4px 10px";
+        btn.addEventListener("click", async () => {
+          try {
+            await api(`/automation/rules/${rule.rule_id}`, { method: "DELETE" });
+            loadRules();
+          } catch (err) { toast(err.message); }
+        });
+        cell.appendChild(btn);
+      }
+    });
+  } catch (err) {
+    fillTable($("#rules-table"), [], [["", ""]]);
+  }
+}
+
+$("#rule-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const raw = Object.fromEntries(new FormData(e.target));
+  try {
+    await api("/automation/rules", {
+      method: "POST",
+      body: JSON.stringify({ name: raw.name, fact: raw.fact,
+        operator: raw.operator, threshold: parseFloat(raw.threshold),
+        action: raw.action }),
+    });
+    e.target.reset();
+    toast("Rule added", "ok");
+    loadRules();
+  } catch (err) { toast(err.message); }
+});
+
+$("#btn-rules-run").addEventListener("click", async () => {
+  try {
+    const report = await api("/automation/run", { method: "POST" });
+    const fired = report.filter(r => r.fired).length;
+    toast(`${fired} of ${report.length} rule(s) fired`, "ok");
+    loadRules();
+  } catch (err) { toast(err.message); }
+});
+
+/* ------------------------------------------------------------------ desktop pairing */
+
+$("#btn-pair-desktop").addEventListener("click", async () => {
+  try {
+    const r = await api("/pairing/code", {
+      method: "POST", body: JSON.stringify({ label: "Desktop workstation" }),
+    });
+    $("#pairing-code-display").textContent = r.code;
+    $("#dlg-pairing").showModal();
+  } catch (err) { toast(err.message); }
+});
 
 /* ------------------------------------------------------------------ dialogs */
 
@@ -502,17 +722,7 @@ function toast(message) {
       state.token = null;
     }
   }
-  $("#login-view").classList.remove("hidden");
+  /* no session: the sign-in gate in app.html is already visible */
+  const gate = $("#login-gate");
+  if (gate) gate.classList.remove("hidden");
 })();
-
-$("#login-form").addEventListener("submit", async e => {
-  e.preventDefault();
-  const box = $("#login-error");
-  box.classList.add("hidden");
-  try {
-    await login($("#login-user").value.trim(), $("#login-pass").value);
-  } catch (err) {
-    box.textContent = err.message || "Sign-in failed";
-    box.classList.remove("hidden");
-  }
-});

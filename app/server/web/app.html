@@ -27,6 +27,7 @@
     </div>
     <div class="top-actions">
       <span id="whoami" class="muted"></span>
+      <button id="btn-pair-desktop" class="btn ghost hidden" title="Let the desktop app sign in with this session">Pair desktop app</button>
       <button id="btn-logout" class="btn ghost">Sign out</button>
     </div>
   </header>
@@ -37,7 +38,9 @@
       <button class="nav-btn active" data-view="dashboard">◧ Dashboard</button>
       <button class="nav-btn" data-view="patients">👥 Patients</button>
       <button class="nav-btn" data-view="appointments">🗓 Appointments</button>
+      <button class="nav-btn" data-view="reports">📊 Reports</button>
       <button class="nav-btn" data-view="access" id="nav-access">🗝 Access</button>
+      <button class="nav-btn" data-view="settings" id="nav-settings">⚙ Settings</button>
       <button class="nav-btn" data-view="activity">⧗ Activity</button>
       <div class="spacer"></div>
       <div id="perm-note" class="muted small" style="padding:0 10px"></div>
@@ -105,6 +108,99 @@
         <h2>Activity</h2>
         <table id="activity-table" class="table"></table>
       </section>
+
+      <section id="view-reports" class="view hidden">
+        <h2>Reports &amp; exports</h2>
+        <p class="muted">Live trends from the database; exports download portable files.</p>
+        <div class="two-col">
+          <div class="card">
+            <h3>Top diagnoses</h3>
+            <table id="reports-dx" class="table"></table>
+          </div>
+          <div class="card">
+            <h3>Provider workload (30 days)</h3>
+            <table id="reports-prov" class="table"></table>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Export datasets</h3>
+          <div class="chip-row" id="export-row">
+            <button class="btn" data-export="patients" data-fmt="csv">Patient directory → CSV</button>
+            <button class="btn" data-export="appointments" data-fmt="csv">Appointments → CSV</button>
+            <button class="btn" data-export="diagnoses" data-fmt="csv">Diagnoses → CSV</button>
+            <button class="btn" data-export="medications" data-fmt="csv">Medications → CSV</button>
+            <button class="btn" data-export="audit" data-fmt="csv">Audit trail → CSV</button>
+            <button class="btn" data-export="patients" data-fmt="json">Directory → JSON</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view hidden">
+        <h2>Settings</h2>
+        <div class="two-col">
+          <div>
+            <div class="card">
+              <h3>Facility</h3>
+              <p class="muted" id="settings-facility">—</p>
+            </div>
+            <div class="card">
+              <h3>Backups</h3>
+              <div class="chip-row">
+                <button id="btn-backup-now" class="btn primary">Create backup now</button>
+                <button id="btn-backup-prune" class="btn">Prune old backups</button>
+              </div>
+              <table id="backups-table" class="table"></table>
+            </div>
+            <div class="card">
+              <h3>Recycle bin (soft-deleted records)</h3>
+              <table id="bin-table" class="table"></table>
+            </div>
+          </div>
+          <div>
+            <div class="card" id="staff-card">
+              <h3>Staff accounts</h3>
+              <table id="staff-table" class="table"></table>
+            </div>
+            <div class="card" id="automation-card">
+              <h3>Automation rules</h3>
+              <form id="rule-form" class="inline-form">
+                <input name="name" placeholder="Rule name" required>
+                <select name="fact" title="Watch">
+                  <option value="patients_total">Total patients</option>
+                  <option value="appointments_today">Appointments today</option>
+                  <option value="critical_labs">Critical labs</option>
+                  <option value="active_diagnoses">Active diagnoses</option>
+                </select>
+                <select name="operator" title="Condition">
+                  <option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>==</option>
+                </select>
+                <input name="threshold" type="number" step="any" placeholder="Threshold" required style="max-width:90px">
+                <select name="action" title="Action">
+                  <option value="backup">Run backup</option>
+                  <option value="log">Write to log</option>
+                </select>
+                <button class="btn primary">Add rule</button>
+              </form>
+              <div class="chip-row">
+                <button id="btn-rules-run" class="btn">Run rules now</button>
+              </div>
+              <table id="rules-table" class="table"></table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <dialog id="dlg-pairing">
+        <form method="dialog" id="form-pairing" class="dlg-form">
+          <h3>Pair the desktop app</h3>
+          <p class="muted">On the workstation, choose <strong>Pair with server</strong> and
+             type this one-time code. It expires in 10 minutes.</p>
+          <div class="code" id="pairing-code-display" style="font-size:22px;letter-spacing:2px;text-align:center">— — — —</div>
+          <div class="row-end">
+            <button value="close" class="btn ghost">Done</button>
+          </div>
+        </form>
+      </dialog>
 
       <section id="view-chart" class="view hidden">
         <button class="btn ghost" id="btn-back">← Back to patients</button>

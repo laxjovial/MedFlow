@@ -234,6 +234,49 @@ class SecurityService:
         )
         return self.users.insert(user)
 
+    def pair_workstation(self, identity: dict) -> User:
+        """Admit a desktop workstation using a one-time pairing code.
+
+        The identity was authenticated by the web server (password or Google);
+        this mirrors the account here so the workstation has a real local user
+        with the same role. A Google-paired account carries no password — it
+        signs in through pairing — while the first-ever pairing may bootstrap
+        the administrator when the database has no accounts yet.
+        """
+        email = identity.get("email") or ""
+        google_sub = str(identity.get("sub") or "")
+
+        if identity.get("auth_provider") == "google":
+            existing = self.users.get_by_email(email) if email else None
+            if existing:
+                if not existing.active:
+                    raise AuthenticationError("Account is inactive.")
+                if existing.is_expired(to_iso(utcnow())):
+                    raise AuthenticationError("This temporary access has expired.")
+                return existing
+            username = email.split("@")[0].replace(".", "_").lower() if email \
+                else f"paired_{google_sub[-4:]}"
+            if self.users.get_by_username(username):
+                username = f"{username}_{google_sub[-4:]}"
+            user = User(
+                username=username,
+                display_name=identity.get("display_name") or email or username,
+                role=ROLE_ADMIN if not self.users.list() else ROLE_VIEWER,
+                email=email or None,
+                auth_provider="google",
+            )
+            return self.users.insert(user)
+
+        existing = self.users.get_by_username(identity.get("username") or "")
+        if existing:
+            if not existing.active:
+                raise AuthenticationError("Account is inactive.")
+            if existing.is_expired(to_iso(utcnow())):
+                raise AuthenticationError("This temporary access has expired.")
+            return existing
+        raise AuthenticationError(
+            "Paired account no longer exists on this server.")
+
     # ------------------------------------------------------------------ #
     # permissions
 

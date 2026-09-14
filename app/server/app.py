@@ -27,6 +27,7 @@ from app.server.deps import (
     get_reports_service,
     require,
 )
+from app.server.pairing import PairingError, pairing
 from app.server.tokens import issue
 
 OPENAPI_METADATA = dict(
@@ -57,6 +58,27 @@ class SignupRequest(BaseModel):
 
 class GoogleLoginRequest(BaseModel):
     id_token: str
+
+
+class PairingStart(BaseModel):
+    """Body for creating a one-time desktop pairing code."""
+
+    label: str = "Desktop workstation"
+
+
+class PairingRedeem(BaseModel):
+    """Body for redeeming a pairing code (desktop side)."""
+
+    code: str
+    device_id: str = "workstation-01"
+
+
+class AutomationRuleIn(BaseModel):
+    name: str
+    fact: str
+    operator: str
+    threshold: float
+    action: str
 
 
 class TempUserRequest(BaseModel):
@@ -209,6 +231,11 @@ def create_app(config: Config | None = None, db=None, repos=None,
     app.state.google_client_id = google_client_id
     from app.services.reports import ReportsService
     app.state.report_service = ReportsService(repos) if repos else None
+    # Automation rules live for the server's lifetime (same as a desktop
+    # session); the engine is created once, not per request.
+    from app.services.automation import AutomationEngine
+    app.state.automation = AutomationEngine(
+        repos, log_sink=lambda msg: None) if repos else None
 
     app.add_exception_handler(MedFlowError, error_handler)
 
@@ -298,6 +325,64 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "permissions": sorted(security.permissions(user)),
         }}
 
+    # ------------------------------------------------- desktop pairing
+
+    @app.post("/api/pairing/code", status_code=201, tags=["auth"])
+    def pairing_code(body: PairingStart, user=Depends(current_user),
+                     request: Request = None):
+        """Create a one-time code so the desktop app can pair with this server.
+
+        The signed-in user runs the desktop app, types this code there, and the
+        workstation inherits the identity that created it — including a session
+        established through Google on the web. Codes live 10 minutes and are
+        consumed on first use.
+        """
+        repos = request.app.state.repos
+        record = repos["users"].get(int(user["sub"]))
+        email = (record.email if record else None) or \
+            f"{user['username']}@paired.local"
+        try:
+            entry = pairing.issue_code(
+                {
+                    "sub": user["sub"],
+                    "username": user["username"],
+                    "email": email,
+                    "display_name": user.get("display_name") or user["username"],
+                    "role": user["role"],
+                    "auth_provider": record.auth_provider if record else "password",
+                },
+                label=body.label,
+            )
+        except PairingError as exc:
+            raise HTTPException(status_code=429, detail=str(exc))
+        from app.models import AuditEvent
+        repos["audit"].record(AuditEvent(
+            action="pairing", entity_type="session", entity_id=user["username"],
+            actor=user["username"], device_id="web"))
+        return entry
+
+    @app.post("/api/pairing/redeem", tags=["auth"])
+    def pairing_redeem(body: PairingRedeem, request: Request = None):
+        """Exchange a one-time pairing code for a session (desktop side)."""
+        try:
+            identity = pairing.redeem_code(body.code)
+        except PairingError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+        from app.services.security import SecurityService
+        security = SecurityService(request.app.state.repos["users"])
+        try:
+            user = security.pair_workstation(identity)
+        except MedFlowError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+        secret = request.app.state.token_secret
+        token = issue({"sub": user.user_id, "username": user.username,
+                       "role": user.role}, secret)
+        return {"token": token, "identity": identity, "user": {
+            "id": user.user_id, "username": user.username,
+            "display_name": user.display_name, "role": user.role,
+            "permissions": sorted(security.permissions(user)),
+        }}
+
     # ------------------------------------------------- temporary access
 
     @app.get("/api/temp-users", tags=["access"])
@@ -367,6 +452,14 @@ def create_app(config: Config | None = None, db=None, repos=None,
         require(user, "patients.create")
         patient = patients.register(body.model_dump())
         return patient.to_row()
+
+    @app.get("/api/patients/deleted", tags=["patients"])
+    def deleted_patients(user=Depends(current_user),
+                         request: Request = None):
+        """Recycle bin: soft-deleted records, for restore (staff only)."""
+        require(user, "settings.manage")
+        patients = get_patient_service(request, user)
+        return [s.to_row() for s in patients.deleted_patients()]
 
     @app.get("/api/patients/{patient_id}", tags=["patients"])
     def get_patient(
@@ -559,6 +652,75 @@ def create_app(config: Config | None = None, db=None, repos=None,
         if body.active is not None:
             svc.set_user_active(user_id, body.active)
         return repos["users"].get(user_id).to_row()
+
+    # ------------------------------------------------------------ backups
+
+    def _automation_engine(request: Request):
+        engine = request.app.state.automation
+        if engine is None:
+            raise HTTPException(status_code=503, detail="Automation unavailable")
+        return engine
+
+    def _backup_service(request: Request):
+        """A BackupService bound to the same dirs the server was started with."""
+        cfg = request.app.state.config
+        data_dir = Path(cfg.data_dir) if cfg and cfg.data_dir else Path("data")
+        base = data_dir.parent
+        from app.services.backup import BackupService
+        return BackupService(
+            cfg.resolve_database_path(base) if cfg else "data/medflow.db",
+            cfg.resolve_backup_dir(base) if cfg else "data/backups",
+        )
+
+    @app.get("/api/backups", tags=["settings"])
+    def list_backups(user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        return _backup_service(request).list_backups()
+
+    @app.post("/api/backups", status_code=201, tags=["settings"])
+    def create_backup(user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        path = _backup_service(request).create_backup(label="manual")
+        return {"created": path.name, "path": str(path)}
+
+    @app.post("/api/backups/prune", tags=["settings"])
+    def prune_backups(user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        return {"removed": _backup_service(request).prune()}
+
+    # ---------------------------------------------------------- automation
+
+    @app.get("/api/automation/rules", tags=["settings"])
+    def list_rules(user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        engine = _automation_engine(request)
+        return [r.to_row() for r in engine.list_rules()]
+
+    @app.post("/api/automation/rules", status_code=201, tags=["settings"])
+    def create_rule(body: AutomationRuleIn, user=Depends(current_user),
+                    request: Request = None):
+        require(user, "settings.manage")
+        engine = _automation_engine(request)
+        try:
+            rule = engine.add_rule(body.name, body.fact, body.operator,
+                                   body.threshold, body.action)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return rule.to_row()
+
+    @app.delete("/api/automation/rules/{rule_id}", tags=["settings"])
+    def delete_rule(rule_id: str, user=Depends(current_user),
+                    request: Request = None):
+        require(user, "settings.manage")
+        engine = _automation_engine(request)
+        if not engine.remove_rule(rule_id):
+            raise HTTPException(status_code=404, detail="No such rule")
+        return {"removed": rule_id}
+
+    @app.post("/api/automation/run", tags=["settings"])
+    def run_rules(user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        return _automation_engine(request).run_once()
 
     # ------------------------------------------------------------ reports
 
