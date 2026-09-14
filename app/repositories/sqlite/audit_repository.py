@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Any
 
 from app.core.exceptions import PersistenceError
 from app.domain.audit import AuditEntry
+from app.domain.enums import EntityType
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.sqlite.connection import Database
 
@@ -19,14 +21,44 @@ class SqliteAuditRepository(AuditRepository):
     mapping and means a new action type never requires a schema change.
     """
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, patient_ids=None) -> None:
         self._database = database
+        # Optional formatting settings; when absent the patient number is stored
+        # exactly as given (tests write unpadded numbers directly).
+        self._patient_ids = patient_ids
+
+    def _format_entity_id(self, entry: AuditEntry) -> str:
+        """Patient entity ids are stored in the configured display format.
+
+        Callers may hand in a raw ordinal (``3``) or a legacy unpadded number
+        (``MF-3``); the audit trail shows the padded patient number
+        (``MF-000003``) everywhere a patient is named.
+        """
+        value = entry.entity_id
+        if self._patient_ids is not None and value:
+            text = str(value)
+            prefixed = re.fullmatch(
+                rf"{re.escape(self._patient_ids.prefix)}-(\d+)", text
+            )
+            if prefixed:
+                return (
+                    f"{self._patient_ids.prefix}-"
+                    f"{int(prefixed.group(1)):0{self._patient_ids.padding}d}"
+                )
+            if entry.entity_type == EntityType.PATIENT.value and text.isdigit():
+                return (
+                    f"{self._patient_ids.prefix}-"
+                    f"{int(text):0{self._patient_ids.padding}d}"
+                )
+        return value
 
     def record(self, entry: AuditEntry) -> AuditEntry:
         try:
             payload = json.dumps(entry.details or {}, default=str)
         except (TypeError, ValueError) as exc:
             raise PersistenceError(f"Audit details are not serialisable: {exc}") from exc
+
+        entry.entity_id = self._format_entity_id(entry)
 
         try:
             with self._database.transaction() as connection:

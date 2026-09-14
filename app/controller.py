@@ -10,7 +10,7 @@ from __future__ import annotations
 import webbrowser
 from pathlib import Path
 
-from app.config import Config, STORAGE_LOCAL, STORAGE_NETWORK
+from app.runtime_config import Config, STORAGE_LOCAL, STORAGE_NETWORK
 from app.models.org import User
 from app.services.automation import AutomationEngine
 from app.services.backup import BackupService

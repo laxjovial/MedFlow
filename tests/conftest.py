@@ -22,6 +22,14 @@ from pathlib import Path
 
 import pytest
 
+# The desktop-UI tests import CustomTkinter, which needs a display and the
+# ``tkinter`` system package. Headless environments (CI, sandboxes) skip them.
+collect_ignore_glob = []
+try:
+    import tkinter  # noqa: F401
+except ImportError:
+    collect_ignore_glob.append("ui/*")
+
 # ---------------------------------------------------------------- platform ---
 
 from app.storage.engine import Database
@@ -67,7 +75,7 @@ def client(repos, admin_user):
     """TestClient with an authenticated default (``auth`` fixture not needed)."""
     from fastapi.testclient import TestClient
 
-    from app.config import Config
+    from app.runtime_config import Config
     from app.server.app import create_app
     from app.server.tokens import load_or_create_secret
 

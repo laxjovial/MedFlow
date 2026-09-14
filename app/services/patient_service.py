@@ -256,7 +256,9 @@ class PatientService:
         worse than one marked as no longer in use, and the patient number must never
         be handed to someone else.
         """
-        patient = self.require(patient_number)
+        patient = self.require(patient_number, include_deleted=True)
+        if patient.is_deleted:
+            return False
         timestamp = self._clock.timestamp()
 
         if not self._repository.mark_deleted(

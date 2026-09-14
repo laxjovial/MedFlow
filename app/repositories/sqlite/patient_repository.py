@@ -160,6 +160,12 @@ class SqlitePatientRepository(PatientRepository):
         except sqlite3.Error as exc:
             raise PersistenceError(f"Could not create patient: {exc}") from exc
 
+        # A patient may arrive with diagnoses already attached (imports, seeds,
+        # tests). They go through ``add_diagnosis`` so there is still exactly one
+        # code path that writes a diagnosis row.
+        for diagnosis in patient.diagnoses:
+            self.add_diagnosis(patient.id, diagnosis)
+
         return patient
 
     def save(self, patient: Patient) -> Patient:

@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.config import Config
+from app.runtime_config import Config
 from app.errors import (
     MedFlowError,
     NotFoundError,

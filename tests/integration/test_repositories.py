@@ -43,7 +43,9 @@ def history(database: Database) -> SqliteHistoryRepository:
 
 @pytest.fixture
 def audit(database: Database) -> SqliteAuditRepository:
-    return SqliteAuditRepository(database)
+    # Same wiring as production (see ``Container.build``): the audit trail
+    # formats patient entity ids through the configured number settings.
+    return SqliteAuditRepository(database, PatientIdSettings())
 
 
 def make_patient(

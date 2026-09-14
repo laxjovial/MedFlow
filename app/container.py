@@ -55,7 +55,7 @@ class Container:
 
         patient_repository = SqlitePatientRepository(database, settings.patient_ids)
         history_repository = SqliteHistoryRepository(database)
-        audit_repository = SqliteAuditRepository(database)
+        audit_repository = SqliteAuditRepository(database, settings.patient_ids)
 
         # Services first: they own validation, change tracking and audit emission,
         # so nothing below them has to remember to do it.

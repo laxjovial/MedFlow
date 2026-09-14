@@ -23,7 +23,7 @@ log = get_logger("cli")
 
 
 def _connect(data_dir: Path, db_path: str | None):
-    from app.config import Config
+    from app.runtime_config import Config
     from app.storage.engine import Database
     from app.storage.repositories import build_repositories
 

@@ -225,7 +225,7 @@ class TransferService:
 
         for line, raw in rows:
             normalised = _normalise_row(raw)
-            source_identifier = _first_present(normalised, _SOURCE_NUMBER_KEYS)
+            source_identifier = _first_present(raw, _SOURCE_NUMBER_KEYS)
 
             row = ImportRow(
                 line=line,

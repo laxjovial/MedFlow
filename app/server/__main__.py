@@ -14,7 +14,7 @@ from pathlib import Path
 
 import uvicorn
 
-from app.config import Config
+from app.runtime_config import Config
 from app.storage.engine import Database
 from app.storage.repositories import build_repositories
 from app.utils.logging_utils import get_logger, setup_logging
