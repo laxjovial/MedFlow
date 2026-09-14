@@ -1,7 +1,19 @@
-.venv/
+# python
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
+
+# builds
 build/
 dist/
-*.spec
-medflow.db
+
+# MedFlow runtime data (database, config, logs, exports, backups)
+data/
+*.db
+*.db-wal
+*.db-shm
+.token_secret
+
+# keep the packaging spec in the repo
+!MedFlow.spec

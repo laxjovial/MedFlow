@@ -1,1 +1,14 @@
-customtkinter>=5.2,<6
+# --- core (desktop UI) ---
+customtkinter>=6.0,<7
+
+# --- web + API server ---
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2.7
+
+# --- security ---
+passlib>=1.7
+argon2-cffi>=23.1
+
+# --- development ---
+pytest>=8.0
