@@ -52,17 +52,24 @@
      and the account stops working the moment it expires — or instantly, if you revoke it.</p>
 
   <h2 class="section-title">Running the desktop app</h2>
-  <div class="code">python -m venv .venv
+  <p>Install the MedFlow desktop program the way your computer person sets up any program —
+     download it, open it, sign in. Your sign-in works exactly the same as on this website:
+     the moment you're in, every record, department and report is right there, with or without
+     internet. If your facility runs several computers, each one signs in to the same database,
+     so everyone always sees the same up-to-date records.</p>
+
+  <h2 class="section-title">For the technically curious (optional)</h2>
+  <p>Everything below is for developers — <strong>you never need any of it to use MedFlow.</strong></p>
+  <details>
+    <summary>Developer setup &amp; commands</summary>
+    <div class="code">python -m venv .venv
 <span class="c"># Windows: .venv\Scripts\activate — macOS/Linux: source .venv/bin/activate</span>
 pip install -r requirements.txt
-python main.py</div>
-  <p>The desktop app reads the same database and accounts as this website. Point a workstation at a
-     running server with Settings → “Connect to server”, or keep it fully offline — both work.</p>
-
-  <h2 class="section-title">Serving the web workspace yourself</h2>
-  <div class="code">python main.py --server --host 0.0.0.0 --port 8000</div>
-  <p>The site you're reading, the workspace, and the JSON API (<a href="/docs">/docs</a>) all come from
-     that one process on your own machine.</p>
+python main.py                <span class="c"># desktop app</span>
+python main.py --server       <span class="c"># web workspace + API on your own machine</span></div>
+    <p class="muted small">The site you're reading, the workspace, and the API (<a href="/docs">/docs</a>)
+       all come from that one process. A packaged installer is planned so even this disappears.</p>
+  </details>
 </div>
 
 <footer class="site-footer">
