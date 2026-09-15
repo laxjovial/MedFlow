@@ -761,12 +761,21 @@ def create_app(config: Config | None = None, db=None, repos=None,
     # ------------------------------------------------------- appointments
 
     @app.get("/api/appointments", tags=["appointments"])
-    def list_appointments(scope: str = "upcoming", user=Depends(current_user),
+    def list_appointments(scope: str = "upcoming", provider: str | None = None,
+                          user=Depends(current_user),
                           records=Depends(get_records_service)):
+        """The front desk list; add ?provider=Name for one clinician's book."""
         require(user, "appointments.view")
         if scope == "today":
-            return records.todays_schedule()
-        return records.upcoming_appointments()
+            return records.todays_schedule(provider=provider)
+        return records.upcoming_appointments(provider=provider)
+
+    @app.get("/api/appointments/providers", tags=["appointments"])
+    def list_providers(user=Depends(current_user),
+                       records=Depends(get_records_service)):
+        """Clinicians with appointments on the books — for filter menus."""
+        require(user, "appointments.view")
+        return records.providers()
 
     @app.post("/api/appointments", status_code=201, tags=["appointments"])
     def schedule_appointment(body: AppointmentCreate, patient_id: int,

@@ -115,8 +115,12 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
       <section id="view-appointments" class="view hidden">
         <div class="row-between">
           <h2>Appointments</h2>
-          <button id="btn-new-appt" class="btn primary">＋ Schedule</button>
+          <div class="chip-row">
+            <select id="appt-provider" style="min-width:170px"></select>
+            <button id="btn-new-appt" class="btn primary">＋ Schedule</button>
+          </div>
         </div>
+        <p id="appt-mine" class="card hidden" style="border-left:4px solid var(--accent)"></p>
         <table id="appts-table" class="table"></table>
       </section>
 
@@ -411,7 +415,8 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
     <h3>Schedule appointment</h3>
     <label>Patient ID<input name="patient_id" type="number" required placeholder="Patient #"></label>
     <label>When<input name="scheduled_at" type="datetime-local" required></label>
-    <label>Provider<input name="provider"></label>
+    <label>Provider — the doctor or nurse who will see them<input name="provider" list="provider-list"></label>
+    <datalist id="provider-list"></datalist>
     <label>Reason<input name="reason"></label>
     <p class="error hidden" id="form-appointment-error"></p>
     <div class="row-end">

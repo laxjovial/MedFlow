@@ -306,3 +306,22 @@ def test_bulk_import_reports_rows(client, auth):
 
     found = client.get("/api/patients?q=Bulk", headers=auth).json()
     assert len(found) == 2
+
+
+def test_provider_scoping_and_lists(client, auth):
+    """A clinician's book is filterable; the providers list feeds menus."""
+    pid = client.post("/api/patients", headers=auth,
+                      json={"name": "Appt Patient"}).json()["patient_id"]
+    client.post(f"/api/appointments?patient_id={pid}", headers=auth,
+                json={"scheduled_at": "2026-09-20T09:00",
+                      "provider": "Dr. Bello", "reason": "follow-up"})
+    client.post(f"/api/appointments?patient_id={pid}", headers=auth,
+                json={"scheduled_at": "2026-09-21T10:00",
+                      "provider": "Dr. Ade", "reason": "review"})
+
+    bello = client.get("/api/appointments?scope=upcoming&provider=Dr.%20Bello",
+                       headers=auth).json()
+    assert len(bello) == 1 and bello[0]["provider"] == "Dr. Bello"
+
+    providers = client.get("/api/appointments/providers", headers=auth).json()
+    assert set(providers) >= {"Dr. Bello", "Dr. Ade"}

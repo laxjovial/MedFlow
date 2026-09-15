@@ -497,7 +497,17 @@ $("#btn-delete-patient").addEventListener("click", async () => {
 
 async function loadAppointments() {
   try {
-    const appts = await api("/appointments?scope=upcoming");
+    /* provider filter menu */
+    const sel = $("#appt-provider");
+    if (sel) {
+      const current = sel.value;
+      const providers = await api("/appointments/providers");
+      sel.innerHTML = '<option value="">All providers</option>' +
+        providers.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+      if (providers.includes(current)) sel.value = current;
+    }
+    const prov = sel && sel.value ? `&provider=${encodeURIComponent(sel.value)}` : "";
+    const appts = await api(`/appointments?scope=upcoming${prov}`);
     fillTable($("#appts-table"), appts, [
       ["patient_name", "Patient"],
       ["scheduled_at", "When"],
@@ -505,10 +515,27 @@ async function loadAppointments() {
       ["reason", "Reason"],
       ["status", "Status"],
     ], { datetime: ["scheduled_at"] });
+
+    /* “your next patients” — the signed-in clinician's upcoming book */
+    const mine = $("#appt-mine");
+    if (mine) {
+      const me = state.user.display_name;
+      const myAppts = await api(`/appointments?scope=upcoming&provider=${encodeURIComponent(me)}`);
+      if (myAppts.length) {
+        const next = myAppts[0];
+        mine.innerHTML = `<strong>${myAppts.length}</strong> upcoming appointment(s) booked for you — ` +
+          `next: ${esc(next.patient_name)} at ${fmtDT(next.scheduled_at)}.`;
+        mine.classList.remove("hidden");
+      } else {
+        mine.classList.add("hidden");
+      }
+    }
   } catch (err) {
     toast(err.message);
   }
 }
+
+$("#appt-provider")?.addEventListener("change", loadAppointments);
 
 /* ------------------------------------------------------------------ activity */
 
@@ -892,9 +919,14 @@ $("#form-patient").addEventListener("submit", async e => {
 });
 
 const dlgAppt = $("#dlg-appointment");
-$("#btn-new-appt").addEventListener("click", () => {
+$("#btn-new-appt").addEventListener("click", async () => {
   $("#form-appointment").reset();
   $("#form-appointment-error").classList.add("hidden");
+  try {
+    const providers = await api("/appointments/providers");
+    $("#provider-list").innerHTML =
+      providers.map(p => `<option value="${esc(p)}">`).join("");
+  } catch { /* fresh facilities have nobody on the books yet */ }
   dlgAppt.showModal();
 });
 

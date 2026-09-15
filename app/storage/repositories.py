@@ -341,24 +341,41 @@ class AppointmentRepository(_Repository):
             (appointment_id,),
         )
 
-    def upcoming(self, limit: int = 50) -> list[dict]:
+    def upcoming(self, limit: int = 50, provider: str | None = None) -> list[dict]:
         now = to_iso(utcnow())
-        return self._query_all(
+        sql = (
             f"SELECT a.*, p.name AS patient_name, p.patient_number "
             f"FROM {self.table} a JOIN patients p USING (patient_id) "
             f"WHERE a.scheduled_at >= ? AND a.status IN ('scheduled', 'checked_in') "
-            f"ORDER BY a.scheduled_at LIMIT ?",
-            (now, limit),
         )
+        params: list = [now]
+        if provider:
+            sql += " AND LOWER(a.provider) = LOWER(?)"
+            params.append(provider.strip())
+        sql += " ORDER BY a.scheduled_at LIMIT ?"
+        params.append(limit)
+        return self._query_all(sql, params)
 
-    def on_date(self, day_iso: str) -> list[dict]:
-        return self._query_all(
+    def on_date(self, day_iso: str, provider: str | None = None) -> list[dict]:
+        sql = (
             f"SELECT a.*, p.name AS patient_name, p.patient_number "
             f"FROM {self.table} a JOIN patients p USING (patient_id) "
             f"WHERE SUBSTR(a.scheduled_at, 1, 10) = ? "
-            f"ORDER BY a.scheduled_at",
-            (day_iso,),
         )
+        params: list = [day_iso]
+        if provider:
+            sql += " AND LOWER(a.provider) = LOWER(?)"
+            params.append(provider.strip())
+        sql += " ORDER BY a.scheduled_at"
+        return self._query_all(sql, params)
+
+    def providers(self) -> list[str]:
+        """Names that have ever been recorded as an appointment provider."""
+        rows = self._query_all(
+            f"SELECT DISTINCT provider FROM {self.table} "
+            "WHERE provider IS NOT NULL AND provider != '' "
+            "ORDER BY provider COLLATE NOCASE")
+        return [r["provider"] for r in rows]
 
     def for_patient(self, patient_id: int) -> list[dict]:
         return self._query_all(

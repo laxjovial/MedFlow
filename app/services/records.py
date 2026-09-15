@@ -311,9 +311,22 @@ class RecordsService:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def upcoming_appointments(self, limit: int = 50) -> list[dict]:
-        return self.repos["appointments"].upcoming(limit)
+    def upcoming_appointments(self, limit: int = 50,
+                              provider: str | None = None) -> list[dict]:
+        return self.repos["appointments"].upcoming(limit, provider)
 
-    def todays_schedule(self, now=None) -> list[dict]:
+    def todays_schedule(self, now=None, provider: str | None = None) -> list[dict]:
         now = now or utcnow()
-        return self.repos["appointments"].on_date(to_iso(now)[:10])
+        return self.repos["appointments"].on_date(to_iso(now)[:10], provider)
+
+    def next_appointments(self, provider: str, horizon_days: int = 7) -> list[dict]:
+        """A clinician's next appointments inside the notification window."""
+        now = utcnow()
+        from datetime import timedelta
+        cutoff = to_iso(now + timedelta(days=horizon_days))
+        rows = self.repos["appointments"].upcoming(limit=50, provider=provider)
+        return [r for r in rows if r["scheduled_at"] <= cutoff]
+
+    def providers(self) -> list[str]:
+        """Everyone who has appointments on the books, for filter menus."""
+        return self.repos["appointments"].providers()
