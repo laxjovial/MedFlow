@@ -161,8 +161,16 @@
             </div>
             <div class="card" id="cloud-card">
               <h3>Off-site cloud copy</h3>
-              <p class="muted small">An extra copy in your own bucket or cloud drive, encrypted with a passphrase only your facility knows. If anything happens to this building, the records survive elsewhere.</p>
+              <p class="muted small">An extra copy of your records in cloud storage that <strong>you own</strong> — MedFlow never hosts them and never charges you for space. Two ways to switch it on:</p>
+              <ul class="plain-list">
+                <li><strong>Guided:</strong> click <em>Set up with a helper account</em> — we walk you through creating storage with a friendly provider in a few clicks, then bring the details back here.</li>
+                <li><strong>Already have storage?</strong> Fill in its web address, folder name and your access keys below. Ask whoever set up your internet or office computers if unsure.</li>
+              </ul>
+              <p class="muted small">Every copy is scrambled with a secret phrase that only your facility knows — the storage company can't read a word. MedFlow never stores the phrase; if it's lost, the off-site copies cannot be opened.</p>
               <p class="muted small" id="cloud-status">—</p>
+              <div class="chip-row">
+                <a class="btn" href="/guide#cloud" target="_blank" rel="noopener">Storage help, step by step</a>
+              </div>
               <form id="cloud-form" class="inline-form hidden">
                 <select id="cloud-provider">
                   <option value="s3">S3-compatible (AWS, Backblaze B2, R2, MinIO…)</option>
@@ -171,22 +179,34 @@
                 <input id="cloud-endpoint" placeholder="https://s3.af-south-1.amazonaws.com (or WebDAV URL)">
                 <input id="cloud-bucket" placeholder="Bucket / folder name">
                 <input id="cloud-prefix" placeholder="Folder prefix (optional, e.g. medflow)">
-                <input id="cloud-access" placeholder="Access key / username">
+                <input id="cloud-access" placeholder="Access key / username (the storage gives you these)">
                 <input id="cloud-secret" type="password" placeholder="Secret key / password">
                 <label class="check-row"><input type="checkbox" id="cloud-enabled"> Enable off-site copies</label>
                 <div class="chip-row">
                   <button type="submit" class="btn primary">Save settings</button>
                   <button type="button" id="btn-cloud-test" class="btn">Test connection</button>
                 </div>
+                <p class="muted small">What to paste where: <strong>Endpoint</strong> is the storage's web address · <strong>Bucket</strong> is the folder name you created there · <strong>Access key + Secret</strong> are the username-and-password pair the storage shows you after setup. Everything is saved on this computer — nothing is sent to us.</p>
               </form>
               <form id="cloud-upload-form" class="inline-form hidden">
-                <input id="cloud-passphrase" type="password" placeholder="Encryption passphrase (min 8 chars) — needed later to restore">
+                <input id="cloud-passphrase" type="password" placeholder="Secret phrase for scrambling the copy (min 8 characters) — write it somewhere safe">
                 <div class="chip-row">
                   <button type="submit" class="btn primary">Back up to cloud now</button>
                 </div>
-                <p class="muted small">MedFlow never stores this passphrase. If you lose it, the off-site copies cannot be opened.</p>
               </form>
               <p id="cloud-msg" class="muted small hidden"></p>
+            </div>
+            <div class="card">
+              <h3>Session &amp; sign-out</h3>
+              <p class="muted small">How long people stay signed in — see <a href="/security">the security page</a> for what this means.</p>
+              <div class="inline-form" id="session-form">
+                <label class="check-row"><input type="checkbox" id="sess-remember"> Allow “stay signed in” (up to <select id="sess-days">
+                  <option value="1">1 day</option><option value="2">2 days</option><option value="3">3 days</option>
+                  <option value="7" selected>7 days</option></select>)</label>
+                <label class="check-row"><input type="checkbox" id="sess-logout" checked> Show the Sign out button to staff</label>
+                <div class="chip-row"><button id="btn-session-save" class="btn primary">Save session settings</button></div>
+                <p class="muted small" id="session-status">—</p>
+              </div>
             </div>
             <div class="card">
               <h3>Recycle bin (soft-deleted records)</h3>

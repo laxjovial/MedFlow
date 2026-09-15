@@ -28,8 +28,9 @@ def test_session_policy_public_and_defaults(client):
     assert r.status_code == 200
     body = r.json()
     assert body["token_ttl_hours"] == 12
-    assert body["remember_me_days"] == 30
+    assert body["remember_me_days"] == 7
     assert body["sliding_refresh"] is True
+    assert body["logouts_enabled"] is True
 
 
 def test_admin_can_shorten_sessions(client, auth):

@@ -369,9 +369,15 @@ dialog::backdrop { background: rgba(22, 40, 60, .35); }
 
 .check-row {
   display: flex; align-items: center; gap: 8px;
-  font-size: 13.5px; color: var(--muted); margin: 4px 0 10px;
+  font-size: 13.5px; color: var(--ink); margin: 4px 0 10px;
 }
 .check-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.check-row select { margin: 0 2px; padding: 2px 6px; }
+
+/* plain-language lists + inline hints (growth round 2) */
+.plain-list { margin: 6px 0 10px; padding-left: 20px; color: var(--muted); font-size: 13.5px; }
+.plain-list li { margin: 4px 0; }
+.hint-inline { color: var(--muted); font-size: 12.5px; }
 
 .btn.small { padding: 4px 10px; font-size: 12.5px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }

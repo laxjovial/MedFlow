@@ -71,8 +71,9 @@ class SessionConfig:
     """
 
     token_ttl_hours: int = 12          # a normal workday
-    remember_me_days: int = 30         # "keep me signed in" window
+    remember_me_days: int = 7          # "stay signed in" — weekly at most
     sliding_refresh: bool = True       # renew expiry while the tab is open
+    logouts_enabled: bool = True       # admin can pin the Sign out button off
 
 
 @dataclass

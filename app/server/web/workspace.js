@@ -41,6 +41,7 @@ function logout() {
   state.token = null;
   state.user = null;
   localStorage.removeItem("medflow.session");
+  localStorage.removeItem("medflow.remember");
   $("#app-view").classList.add("hidden");
   $("#login-gate").classList.remove("hidden");
 }
@@ -452,6 +453,7 @@ async function loadSettings() {
   loadBackups();
   loadBin();
   loadCloudBackup();
+  loadSessionPolicy();
   const perms = new Set(state.user.permissions || []);
   if (perms.has("users.manage")) loadStaff();
   if (perms.has("settings.manage")) loadRules();
@@ -485,7 +487,47 @@ $("#btn-backup-prune").addEventListener("click", async () => {
   } catch (err) { toast(err.message); }
 });
 
-/* ------------------------------------------------------- off-site cloud */
+/* --------------------------------------------------- session policy UI */
+
+async function loadSessionPolicy() {
+  const form = $("#session-form");
+  if (!form) return;
+  try {
+    const s = await api("/settings/session");
+    $("#sess-remember").checked = s.remember_me_days > 0;
+    $("#sess-days").value = String(Math.min(7, Math.max(1, s.remember_me_days || 7)));
+    $("#sess-logout").checked = s.logouts_enabled !== false;
+    const btn = $("#btn-logout");
+    if (btn) btn.classList.toggle("hidden", s.logouts_enabled === false);
+    const kind = s.sliding_refresh ? "renews while in use" : "fixed length";
+    $("#session-status").textContent =
+      `Now: ${s.token_ttl_hours}-hour sign-ins${s.remember_me_days ? `, “stay signed in” keeps people in for up to ${s.remember_me_days} day(s)` : "”}, sessions ${kind}.`;
+    const perms = new Set(state.user.permissions || []);
+    [...form.querySelectorAll("input,select,button")].forEach(
+      el => (el.disabled = !perms.has("users.manage")));
+  } catch { /* non-admins see the summary only */ }
+}
+
+$("#btn-session-save").addEventListener("click", async () => {
+  try {
+    const days = $("#sess-remember").checked ? parseInt($("#sess-days").value, 10) : 1;
+    const r = await api("/settings/session", {
+      method: "PATCH",
+      body: JSON.stringify({
+        token_ttl_hours: 12,
+        remember_me_days: days,
+        logouts_enabled: $("#sess-logout").checked,
+        sliding_refresh: true,
+      }),
+    });
+    toast("Session settings saved", "ok");
+    loadSessionPolicy();
+    const btn = $("#btn-logout");
+    if (btn) btn.classList.toggle("hidden", r.logouts_enabled === false);
+  } catch (err) { toast(err.message); }
+});
+
+/* ------------------------------------------------------ off-site cloud */
 
 function cloudMsg(text, isErr = false) {
   const el = $("#cloud-msg");

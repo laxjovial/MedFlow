@@ -96,6 +96,7 @@ class SessionPolicyIn(BaseModel):
     token_ttl_hours: int | None = None
     remember_me_days: int | None = None
     sliding_refresh: bool | None = None
+    logouts_enabled: bool | None = None
 
 
 class UnitRename(BaseModel):
@@ -520,7 +521,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
         s = cfg.session if cfg else SessionConfig()
         return {"token_ttl_hours": s.token_ttl_hours,
                 "remember_me_days": s.remember_me_days,
-                "sliding_refresh": bool(s.sliding_refresh)}
+                "sliding_refresh": bool(s.sliding_refresh),
+                "logouts_enabled": bool(getattr(s, "logouts_enabled", True))}
 
     @app.patch("/api/settings/session", tags=["settings"])
     def set_session_policy(body: SessionPolicyIn, user=Depends(current_user),
@@ -537,12 +539,14 @@ def create_app(config: Config | None = None, db=None, repos=None,
                                     detail="Session hours must be 1-8760")
             s.token_ttl_hours = int(body.token_ttl_hours)
         if body.remember_me_days is not None:
-            if not 1 <= body.remember_me_days <= 365:
+            if not 1 <= body.remember_me_days <= 7:
                 raise HTTPException(status_code=400,
-                                    detail="Remember-me days must be 1-365")
+                                    detail="Remember-me is capped at 7 days (a week)")
             s.remember_me_days = int(body.remember_me_days)
         if body.sliding_refresh is not None:
             s.sliding_refresh = bool(body.sliding_refresh)
+        if body.logouts_enabled is not None:
+            s.logouts_enabled = bool(body.logouts_enabled)
         cfg.save()
         from app.models import AuditEvent
         request.app.state.repos["audit"].record(AuditEvent(
@@ -550,11 +554,13 @@ def create_app(config: Config | None = None, db=None, repos=None,
             entity_id=user["username"],
             details=(f"Session policy: {s.token_ttl_hours}h sign-ins, "
                      f"{s.remember_me_days}d remember-me, "
-                     f"rolling {'on' if s.sliding_refresh else 'off'}"),
+                     f"rolling {'on' if s.sliding_refresh else 'off'}, "
+                     f"sign-out {'on' if getattr(s, 'logouts_enabled', True) else 'pinned off'}"),
             actor=user["username"], device_id="server"))
         return {"token_ttl_hours": s.token_ttl_hours,
                 "remember_me_days": s.remember_me_days,
-                "sliding_refresh": bool(s.sliding_refresh)}
+                "sliding_refresh": bool(s.sliding_refresh),
+                "logouts_enabled": bool(getattr(s, "logouts_enabled", True))}
 
     # ------------------------------------------------------------ patients
 

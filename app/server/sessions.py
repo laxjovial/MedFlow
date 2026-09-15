@@ -2,9 +2,10 @@
 
 Session length is an operator decision, not a hardcoded constant — a busy
 outpatient desk and a night-shift ward want different trade-offs between
-convenience and re-authentication. Defaults (12-hour sessions, 30-day
-remember-me, rolling refresh) fit a typical clinic day; the administrator
-changes them in Settings and the change applies to every future sign-in.
+convenience and re-authentication. Defaults (12-hour sessions, remember-me
+that lasts a week at most, rolling refresh) fit a typical clinic day; the
+administrator changes them in Settings and the change applies to every
+future sign-in.
 """
 
 from __future__ import annotations
