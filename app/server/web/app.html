@@ -143,6 +143,14 @@
               <h3>Facility</h3>
               <p class="muted" id="settings-facility">—</p>
             </div>
+            <div class="card" id="departments-card">
+              <h3>Departments</h3>
+              <p class="muted small">Wards, clinics and units — the workspace grows as your facility does.</p>
+              <div class="chip-row">
+                <button id="btn-dept-new" class="btn primary">New department</button>
+              </div>
+              <table id="departments-table" class="table"></table>
+            </div>
             <div class="card">
               <h3>Backups</h3>
               <div class="chip-row">
@@ -150,6 +158,35 @@
                 <button id="btn-backup-prune" class="btn">Prune old backups</button>
               </div>
               <table id="backups-table" class="table"></table>
+            </div>
+            <div class="card" id="cloud-card">
+              <h3>Off-site cloud copy</h3>
+              <p class="muted small">An extra copy in your own bucket or cloud drive, encrypted with a passphrase only your facility knows. If anything happens to this building, the records survive elsewhere.</p>
+              <p class="muted small" id="cloud-status">—</p>
+              <form id="cloud-form" class="inline-form hidden">
+                <select id="cloud-provider">
+                  <option value="s3">S3-compatible (AWS, Backblaze B2, R2, MinIO…)</option>
+                  <option value="webdav">WebDAV (Nextcloud, Synology…)</option>
+                </select>
+                <input id="cloud-endpoint" placeholder="https://s3.af-south-1.amazonaws.com (or WebDAV URL)">
+                <input id="cloud-bucket" placeholder="Bucket / folder name">
+                <input id="cloud-prefix" placeholder="Folder prefix (optional, e.g. medflow)">
+                <input id="cloud-access" placeholder="Access key / username">
+                <input id="cloud-secret" type="password" placeholder="Secret key / password">
+                <label class="check-row"><input type="checkbox" id="cloud-enabled"> Enable off-site copies</label>
+                <div class="chip-row">
+                  <button type="submit" class="btn primary">Save settings</button>
+                  <button type="button" id="btn-cloud-test" class="btn">Test connection</button>
+                </div>
+              </form>
+              <form id="cloud-upload-form" class="inline-form hidden">
+                <input id="cloud-passphrase" type="password" placeholder="Encryption passphrase (min 8 chars) — needed later to restore">
+                <div class="chip-row">
+                  <button type="submit" class="btn primary">Back up to cloud now</button>
+                </div>
+                <p class="muted small">MedFlow never stores this passphrase. If you lose it, the off-site copies cannot be opened.</p>
+              </form>
+              <p id="cloud-msg" class="muted small hidden"></p>
             </div>
             <div class="card">
               <h3>Recycle bin (soft-deleted records)</h3>
@@ -289,6 +326,7 @@
       <label>Date of birth<input name="date_of_birth" type="date"></label>
       <label>Phone<input name="phone"></label>
       <label>Email<input name="email" type="email"></label>
+      <label>Department<select name="department_id" id="form-dept"><option value="">— none —</option></select></label>
       <label>Blood pressure<input name="blood_pressure" placeholder="120/80"></label>
       <label>Heart rate<input name="heart_rate" type="number"></label>
       <label>Weight (kg)<input name="weight" type="number" step="0.1"></label>

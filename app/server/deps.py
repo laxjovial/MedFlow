@@ -45,6 +45,7 @@ def current_user(request: Request) -> dict:
         "username": user.username,
         "display_name": user.display_name,
         "role": user.role,
+        "remember": bool(payload.get("remember")),
         "temporary": user.role == "temporary",
         "scope_patient_ids": user.scoped_patient_ids() if user.role == "temporary" else None,
         "expires_at": user.expires_at,

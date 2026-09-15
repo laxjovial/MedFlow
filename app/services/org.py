@@ -50,6 +50,52 @@ class OrgService:
         ))
         return unit
 
+    def rename_unit(self, unit_id: int, name: str) -> Unit:
+        """Rename a department; the facility root is renamed via Settings."""
+        name = (name or "").strip()
+        if not name:
+            raise ValidationError({"name": ["Unit name is required."]})
+        unit = self.repos["units"].get(unit_id)
+        if not unit:
+            raise NotFoundError(f"Unit #{unit_id} does not exist.")
+        if unit.kind == "organization":
+            raise ValidationError({"unit": [
+                "The facility root cannot be renamed here — "
+                "change the facility name in Settings."]})
+        old = unit.name
+        unit = self.repos["units"].rename(unit_id, name)
+        self.repos["audit"].record(AuditEvent(
+            action=EVENT_UPDATED, entity_type="unit", entity_id=str(unit_id),
+            details=f"Renamed {unit.kind} '{old}' to '{name}'", actor=self.actor,
+        ))
+        return unit
+
+    def delete_unit(self, unit_id: int) -> bool:
+        """Delete an empty department; refuse when records or staff use it."""
+        unit = self.repos["units"].get(unit_id)
+        if not unit:
+            raise NotFoundError(f"Unit #{unit_id} does not exist.")
+        if unit.kind == "organization":
+            raise ValidationError({"unit": [
+                "The facility root cannot be deleted."]})
+        usage = self.repos["units"].usage(unit_id)
+        blockers = [f"{n} {label}" for label, n in (
+            ("patient record(s)", usage["patients"]),
+            ("staff member(s)", usage["staff"]),
+            ("appointment(s)", usage["appointments"]),
+            ("sub-department(s)", usage["children"]),
+        ) if n]
+        if blockers:
+            raise ValidationError({"unit": [
+                f"'{unit.name}' cannot be deleted while it still has "
+                f"{', '.join(blockers)}. Move or reassign them first."]})
+        self.repos["units"].delete(unit_id)
+        self.repos["audit"].record(AuditEvent(
+            action="deleted", entity_type="unit", entity_id=str(unit_id),
+            details=f"Deleted {unit.kind} '{unit.name}'", actor=self.actor,
+        ))
+        return True
+
     # ------------------------------------------------------------------ #
     # users
 

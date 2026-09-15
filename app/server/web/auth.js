@@ -1,4 +1,8 @@
-/* Login + signup pages: password forms, Google button, session storage. */
+/* Login + signup pages: password forms, Google button, session storage.
+
+   If you already have a live session (say you reached here from browser
+   history or a bookmark), the page notices and signs you straight through
+   to your workspace — no need to type anything again. */
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
@@ -17,11 +21,38 @@ async function api(path, options = {}) {
   return body;
 }
 
+function readSession() {
+  try {
+    const raw = localStorage.getItem("medflow.session");
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    return s && s.token ? s : null;
+  } catch {
+    return null;
+  }
+}
+
 function saveSession(data) {
   localStorage.setItem("medflow.session",
     JSON.stringify({ token: data.token, user: data.user }));
   location.href = "/app";
 }
+
+/* ------------------------------------------- already signed in? sail on */
+
+(async function skipIfSignedIn() {
+  const session = readSession();
+  if (!session) return;
+  try {
+    // Confirm the token is still accepted (never trust a stale local copy).
+    await fetch("/api/auth/me", {
+      headers: { Authorization: `Bearer ${session.token}` },
+    }).then((res) => { if (!res.ok) throw new Error("stale"); });
+    location.replace("/app");   // replace: history keeps working naturally
+  } catch {
+    localStorage.removeItem("medflow.session");  // expired — show the form
+  }
+})();
 
 /* ------------------------------------------------------------ password */
 
@@ -35,7 +66,8 @@ if (loginForm) {
       const data = await api("/auth/login", {
         method: "POST",
         body: JSON.stringify({ username: $("#login-user").value.trim(),
-                               password: $("#login-pass").value }),
+                               password: $("#login-pass").value,
+                               remember: $("#login-remember").checked }),
       });
       saveSession(data);
     } catch (err) {

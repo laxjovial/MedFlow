@@ -45,10 +45,10 @@ function logout() {
   $("#login-gate").classList.remove("hidden");
 }
 
-async function login(username, password) {
+async function login(username, password, remember = false) {
   const data = await api("/auth/login", {
     method: "POST",
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, remember }),
   });
   state.token = data.token;
   state.user = data.user;
@@ -57,7 +57,29 @@ async function login(username, password) {
   enterApp();
 }
 
+/* Rolling sessions: while this tab is open the workspace quietly renews
+   the sign-in every hour, so a long shift never ends mid-visit. */
+let refreshTimer = null;
+
+function startSessionRefresh() {
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(async () => {
+    if (!state.token) return;
+    try {
+      const data = await api("/auth/refresh", { method: "POST" });
+      state.token = data.token;
+      const raw = localStorage.getItem("medflow.session");
+      if (raw) {
+        const session = JSON.parse(raw);
+        session.token = data.token;
+        localStorage.setItem("medflow.session", JSON.stringify(session));
+      }
+    } catch { /* next hour will retry; 401s already force logout */ }
+  }, 60 * 60 * 1000);
+}
+
 function enterApp() {
+  startSessionRefresh();
   $("#login-gate").classList.add("hidden");
   $("#app-view").classList.remove("hidden");
   $("#whoami").textContent =
@@ -66,6 +88,7 @@ function enterApp() {
   const perms = new Set(state.user.permissions || []);
   const temporary = !!state.user.temporary;
   $("#btn-new-patient").classList.toggle("hidden", !perms.has("patients.create"));
+  loadDepartments();
   $("#btn-delete-patient").classList.toggle("hidden", !perms.has("patients.delete"));
   $("#btn-new-appt").classList.toggle("hidden", !perms.has("appointments.manage"));
   $("#nav-access").classList.toggle("hidden", !perms.has("users.manage"));
@@ -155,6 +178,86 @@ async function loadDashboard() {
   }
 }
 
+/* ------------------------------------------------------------------ departments */
+
+let deptCache = [];
+
+async function loadDepartments() {
+  try {
+    deptCache = await api("/departments");
+    const sel = $("#form-dept");
+    if (sel) {
+      const current = sel.value;
+      sel.innerHTML = '<option value="">— none —</option>' +
+        deptCache.filter(d => d.kind !== "organization")
+          .map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+      sel.value = current;
+    }
+    const table = $("#departments-table");
+    if (table) {
+      const perms = new Set(state.user.permissions || []);
+      fillTable(table, deptCache, [
+        ["name", "Department"],
+        ["patient_count", "Patients"],
+        [null, "", () => ""],
+      ]);
+      if (perms.has("settings.manage")) {
+        $$("#departments-table tbody tr").forEach((tr, i) => {
+          const cell = tr.lastElementChild;
+          const dept = deptCache[i];
+          if (!dept || tr.querySelector("td[colspan]")) return;
+          cell.innerHTML = "";
+          const rename = document.createElement("button");
+          rename.className = "btn ghost small";
+          rename.textContent = "Rename";
+          rename.addEventListener("click", async () => {
+            const name = prompt("Rename department", dept.name);
+            if (!name || name === dept.name) return;
+            try {
+              await api(`/org/units/${dept.id}`, {
+                method: "PATCH", body: JSON.stringify({ name }),
+              });
+              toast("Department renamed", "ok");
+              loadDepartments();
+            } catch (err) { toast(err.message); }
+          });
+          const del = document.createElement("button");
+          del.className = "btn danger small";
+          del.textContent = "Delete";
+          if (dept.kind === "organization" || dept.patient_count > 0) del.disabled = true;
+          del.title = dept.patient_count > 0
+            ? "Move this department's patients first"
+            : "Delete department";
+          del.addEventListener("click", async () => {
+            if (!confirm(`Delete department "${dept.name}"?`)) return;
+            try {
+              await api(`/org/units/${dept.id}`, { method: "DELETE" });
+              toast("Department deleted", "ok");
+              loadDepartments();
+            } catch (err) { toast(err.message); }
+          });
+          cell.append(rename, del);
+        });
+      }
+    }
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+$("#btn-dept-new")?.addEventListener("click", async () => {
+  const name = prompt("Name the new department (e.g. Maternity, Outpatient, Pharmacy):", "");
+  if (!name || !name.trim()) return;
+  try {
+    await api("/org/units", {
+      method: "POST",
+      body: JSON.stringify({ name: name.trim(), kind: "department" }),
+    });
+    toast(`Department "${name.trim()}" created`, "ok");
+    loadDepartments();
+  } catch (err) { toast(err.message); }
+});
+
 /* ------------------------------------------------------------------ patients */
 
 let searchTimer = null;
@@ -166,11 +269,13 @@ $("#patient-search").addEventListener("input", e => {
 async function loadPatients(query = "") {
   try {
     state.patients = await api(`/patients?q=${encodeURIComponent(query)}`);
+    const deptName = new Map(deptCache.map(d => [d.id, d.name]));
     fillTable($("#patients-table"), state.patients, [
       ["patient_number", "No"],
       ["name", "Name"],
       ["age", "Age"],
       ["sex", "Sex"],
+      [null, "Department", r => deptName.get(r.origin_unit_id) || "—"],
       ["diagnosis", "Diagnosis"],
       ["updated_at", "Updated"],
     ], {
@@ -195,6 +300,7 @@ async function openChart(patientId) {
         <span class="pnum">${esc(chart.patient.patient_number)}</span>
         <span class="tag">${esc(chart.patient.sex || "sex n/a")}</span>
         ${chart.patient.age != null ? `<span class="tag">${chart.patient.age}y</span>` : ""}
+        ${chart.patient.origin_unit_id && deptName(chart.patient.origin_unit_id) ? `<span class="tag">${esc(deptName(chart.patient.origin_unit_id))}</span>` : ""}
         ${chart.patient.blood_pressure ? `<span class="tag warn">BP ${esc(chart.patient.blood_pressure)}</span>` : ""}
       </div>
       <p class="muted small">${esc(chart.patient.medical_history || "No medical history recorded")}</p>`;
@@ -345,6 +451,7 @@ async function loadSettings() {
       `${h.facility} — ${h.patients} patient record(s)`).catch(() => {});
   loadBackups();
   loadBin();
+  loadCloudBackup();
   const perms = new Set(state.user.permissions || []);
   if (perms.has("users.manage")) loadStaff();
   if (perms.has("settings.manage")) loadRules();
@@ -376,6 +483,83 @@ $("#btn-backup-prune").addEventListener("click", async () => {
     toast(`Removed ${r.removed} old backup(s)`, "ok");
     loadBackups();
   } catch (err) { toast(err.message); }
+});
+
+/* ------------------------------------------------------- off-site cloud */
+
+function cloudMsg(text, isErr = false) {
+  const el = $("#cloud-msg");
+  el.textContent = text;
+  el.style.color = isErr ? "var(--danger)" : "";
+  el.classList.remove("hidden");
+}
+
+async function loadCloudBackup() {
+  try {
+    const c = await api("/settings/cloud-backup");
+    $("#cloud-card").classList.toggle("hidden", false);
+    const state_text = c.enabled
+      ? (c.configured ? `On — ${c.provider}` : "On — settings incomplete")
+      : "Off";
+    const last = c.last_upload_status === "ok" && c.last_upload_at
+      ? ` · last upload: ${c.last_upload_at}`
+      : (c.last_upload_status ? ` · last: ${c.last_upload_status}` : "");
+    $("#cloud-status").textContent = `${state_text}${last}`;
+    const perms = new Set(state.user.permissions || []);
+    if (perms.has("settings.manage")) {
+      $("#cloud-form").classList.remove("hidden");
+      if (c.configured) $("#cloud-upload-form").classList.remove("hidden");
+      $("#cloud-provider").value = c.provider === "webdav" ? "webdav" : "s3";
+      $("#cloud-endpoint").value = c.endpoint || "";
+      $("#cloud-bucket").value = c.bucket || "";
+      $("#cloud-prefix").value = c.prefix || "";
+      $("#cloud-enabled").checked = !!c.enabled;
+    }
+  } catch {
+    $("#cloud-card").classList.add("hidden");   // no settings.manage → hide
+  }
+}
+
+$("#cloud-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = {
+    provider: $("#cloud-provider").value,
+    endpoint: $("#cloud-endpoint").value.trim(),
+    bucket: $("#cloud-bucket").value.trim(),
+    prefix: $("#cloud-prefix").value.trim(),
+    enabled: $("#cloud-enabled").checked,
+  };
+  if ($("#cloud-access").value.trim()) body.access_key_id = body.username = $("#cloud-access").value.trim();
+  if ($("#cloud-secret").value) body.secret_access_key = body.password = $("#cloud-secret").value;
+  try {
+    await api("/settings/cloud-backup", { method: "PUT", body: JSON.stringify(body) });
+    $("#cloud-access").value = ""; $("#cloud-secret").value = "";
+    cloudMsg("Saved. Use “Test connection” to verify, then “Back up to cloud now”.", false);
+    loadCloudBackup();
+  } catch (err) { cloudMsg(err.message, true); }
+});
+
+$("#btn-cloud-test")?.addEventListener("click", async () => {
+  try {
+    const r = await api("/settings/cloud-backup/test", { method: "POST" });
+    cloudMsg(r.ok ? `Connection OK — ${r.objects} backup(s) already stored.`
+                  : `Not working: ${r.error}`, !r.ok);
+  } catch (err) { cloudMsg(err.message, true); }
+});
+
+$("#cloud-upload-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pass = $("#cloud-passphrase").value;
+  if (pass.length < 8) { cloudMsg("Passphrase needs at least 8 characters.", true); return; }
+  try {
+    const r = await api("/settings/cloud-backup/upload", {
+      method: "POST", body: JSON.stringify({ passphrase: pass }),
+    });
+    $("#cloud-passphrase").value = "";
+    cloudMsg(`Encrypted copy uploaded (${Math.round(r.bytes / 1024)} KB) — keep that passphrase safe.`, false);
+    toast("Off-site backup uploaded", "ok");
+    loadCloudBackup();
+  } catch (err) { cloudMsg(err.message, true); }
 });
 
 async function loadBin() {
@@ -634,6 +818,11 @@ $("#temp-form").addEventListener("submit", async e => {
 });
 
 /* ------------------------------------------------------------------ helpers */
+
+function deptName(id) {
+  const d = deptCache.find(x => x.id === id);
+  return d ? d.name : null;
+}
 
 function fillTable(table, rows, columns, opts = {}) {
   const thead = table.querySelector("thead") || table.appendChild(document.createElement("thead"));

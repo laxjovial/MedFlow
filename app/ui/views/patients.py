@@ -26,6 +26,13 @@ PATIENT_FIELDS = [
 ]
 
 
+def patient_fields(departments: tuple = ()) -> list[FormField]:
+    """Patient form plus the facility's live department list."""
+    return [*PATIENT_FIELDS,
+            FormField("department", "Department", kind="option",
+                      options=("", *departments))]
+
+
 class PatientsView(ctk.CTkFrame):
     def __init__(self, master, app, open_new: bool = False):
         super().__init__(master, fg_color="transparent")
@@ -105,9 +112,13 @@ class PatientsView(ctk.CTkFrame):
         head.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(head, text=patient.name,
                      font=("Segoe UI", 20, "bold")).pack(side="left")
+        dept_label = ""
+        if patient.origin_unit_id:
+            dept_label = next((f"  ·  {u.name}" for u in self.app.org.list_units()
+                               if u.unit_id == patient.origin_unit_id), "")
         ctk.CTkLabel(head, text=f"  {patient.patient_number}  ·  "
                                 f"{self.app.age_display(patient)}  ·  "
-                                f"{patient.sex or 'sex n/a'}",
+                                f"{patient.sex or 'sex n/a'}{dept_label}",
                      font=F_SMALL, text_color=MUTED).pack(side="left")
         updated_label = humanize(patient.updated_at.isoformat()
                                  if patient.updated_at else None)
@@ -244,8 +255,15 @@ class PatientsView(ctk.CTkFrame):
     # ------------------------------------------------------------------ #
     # record actions
 
+    def _departments(self) -> tuple:
+        try:
+            return tuple(u.name for u in self.app.org.list_units()
+                         if u.kind != "organization")
+        except Exception:
+            return ()
+
     def _new_patient(self) -> None:
-        FormDialog(self, "Register patient", PATIENT_FIELDS,
+        FormDialog(self, "Register patient", patient_fields(self._departments()),
                    self._submit_new, submit_text="Register")
 
     def _submit_new(self, values: dict) -> None:
@@ -256,6 +274,11 @@ class PatientsView(ctk.CTkFrame):
 
     def _edit_patient(self) -> None:
         patient = self.app.patients.get(self.current_id)
+        dept_name = ""
+        if patient.origin_unit_id:
+            unit = self.app.org.list_units()
+            dept_name = next((u.name for u in unit
+                              if u.unit_id == patient.origin_unit_id), "")
         values = {
             "name": patient.name, "age": patient.age, "sex": patient.sex or "",
             "date_of_birth": patient.date_of_birth.isoformat()
@@ -264,8 +287,9 @@ class PatientsView(ctk.CTkFrame):
             "heart_rate": patient.heart_rate, "weight": patient.weight,
             "medical_history": patient.medical_history or "",
             "diagnosis": patient.diagnosis or "", "notes": patient.notes or "",
+            "department": dept_name,
         }
-        FormDialog(self, f"Edit — {patient.name}", PATIENT_FIELDS,
+        FormDialog(self, f"Edit — {patient.name}", patient_fields(self._departments()),
                    self._submit_edit, values=values, submit_text="Save changes")
 
     def _submit_edit(self, values: dict) -> None:

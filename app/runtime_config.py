@@ -32,11 +32,26 @@ class SyncConfig:
 
 @dataclass
 class CloudBackupConfig:
+    """Off-site, end-to-end encrypted database copies.
+
+    The clinic points MedFlow at storage **it owns** (any S3-compatible
+    bucket or a WebDAV share). Every uploaded copy is encrypted with a
+    passphrase only the facility knows, so the storage provider never
+    sees patient data. Secrets live in ``offsite_keys.json`` (0600),
+    never in this file.
+    """
+
     enabled: bool = False
-    provider: str = "none"          # none | s3 | gdrive | webdav
-    bucket: str | None = None
-    auto_upload: bool = False
+    provider: str = "none"          # none | s3 | webdav
+    endpoint: str | None = None     # S3: https://s3.region.amazonaws.com ; WebDAV: base URL
+    bucket: str | None = None       # S3 bucket name or WebDAV folder path
+    prefix: str | None = None       # optional key prefix, e.g. "medflow/backups"
+    region: str = "us-east-1"
+    auto_upload: bool = False       # upload after every local backup
+    keep_last_uploads: int = 14     # remote retention for pruning
+    has_credentials: bool = False   # set when offsite_keys.json holds keys
     last_upload_at: str | None = None
+    last_upload_status: str | None = None
 
 
 @dataclass
@@ -44,6 +59,20 @@ class AutomationConfig:
     enabled: bool = True
     run_on_startup: bool = True
     interval_minutes: int = 30
+
+
+@dataclass
+class SessionConfig:
+    """Sign-in lifetime policy — operator-settable, with sane defaults.
+
+    A normal session lasts ``token_ttl_hours``; ticking "keep me signed in"
+    extends it to ``remember_me_days``. ``sliding_refresh`` rolls the expiry
+    forward on each refresh, so active users are not logged out mid-shift.
+    """
+
+    token_ttl_hours: int = 12          # a normal workday
+    remember_me_days: int = 30         # "keep me signed in" window
+    sliding_refresh: bool = True       # renew expiry while the tab is open
 
 
 @dataclass
@@ -65,6 +94,7 @@ class Config:
     sync: SyncConfig = field(default_factory=SyncConfig)
     cloud_backup: CloudBackupConfig = field(default_factory=CloudBackupConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)
+    session: SessionConfig = field(default_factory=SessionConfig)
 
     # ---------- persistence ----------
 

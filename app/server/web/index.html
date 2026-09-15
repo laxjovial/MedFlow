@@ -30,35 +30,58 @@
 </header>
 
 <section class="hero">
-  <h1>Clinic records that live on your machine</h1>
-  <p class="lede">MedFlow is a local-first clinic management platform: patient records,
-     appointments, reports and inter-facility transfer — with a desktop app and a
-     self-hosted web workspace. No vendor cloud. No per-seat subscriptions.
-     Your data never leaves machines you control.</p>
+  <h1>Patient records that stay yours — even offline</h1>
+  <p class="lede">MedFlow keeps your clinic's records on your own computers, where
+     no one else can touch them. It works with no internet at all, and it's
+     simple enough that you don't need an IT team. Want an off-site safety
+     copy? MedFlow can place one, fully scrambled, in a cloud folder
+     <em>you</em> own — we never hold your data and never bill you for storing it.</p>
   <div class="cta-row">
     <a class="btn primary big" href="/signup">Create your account</a>
     <a class="btn big" href="/login">Sign in</a>
   </div>
   <p class="muted small" style="margin-top:14px">
-    Works offline · SQLite file you can hold · Open API</p>
+    Works offline · One file you can copy · Encrypted off-site copy optional · Open API</p>
 </section>
 
 <div class="page">
   <h2 class="section-title">Why clinics choose MedFlow</h2>
   <p class="section-sub">Built on what makes medical software actually get used</p>
   <div class="grid3">
-    <div class="card"><div class="ico">⚡</div><h4>Fast to the task</h4>
-      <p>Search-first navigation finds any patient in under a second. Chart sections have inline entry rows, so documenting a visit is one screen — not five dialogs.</p></div>
-    <div class="card"><div class="ico">🧘</div><h4>Calm by design</h4>
-      <p>One accent color, clear hierarchy, readable tables. Software that feels quiet reduces the documentation fatigue clinicians complain about most.</p></div>
-    <div class="card"><div class="ico">🔒</div><h4>Yours, provably</h4>
-      <p>The database is a file you can copy. Every action lands in an audit trail. Backups are plain SQLite you can email to yourself.</p></div>
-    <div class="card"><div class="ico">📴</div><h4>Offline first</h4>
-      <p>A power cut or dead router never stops the clinic. The desktop app needs no network at all; sync is optional, not a dependency.</p></div>
-    <div class="card"><div class="ico">🤝</div><h4>Facility to facility</h4>
-      <p>Move a complete record to another MedFlow facility as a checksummed file — new record or supervised merge, your choice.</p></div>
-    <div class="card"><div class="ico">🚪</div><h4>Exit ramps, not lock-in</h4>
-      <p>CSV and JSON exports, printable charts, open API. Your data leaves as easily as it arrived.</p></div>
+    <div class="card"><div class="ico">⚡</div><h4>Find any patient in seconds</h4>
+      <p>Type a few letters of a name, a phone number, or the patient card number — they're on your screen right away. Writing up a visit is one page, not five pop-up boxes.</p></div>
+    <div class="card"><div class="ico">🧘</div><h4>Easy on the eyes</h4>
+      <p>One calm colour, clear headings, and tables you can actually read. The software stays quiet and out of the way, so staff can think about patients instead of fighting the screen.</p></div>
+    <div class="card"><div class="ico">🔒</div><h4>Your records, really yours</h4>
+      <p>Everything lives in one file on your own computer — copy it to a flash drive any time. Every change is recorded: who did it, what changed, and when.</p></div>
+    <div class="card"><div class="ico">📴</div><h4>Works without internet</h4>
+      <p>Power cut? Router dead? Clinic out in the countryside with no signal? MedFlow keeps working — you can register patients and write records all day with no connection at all.</p></div>
+    <div class="card"><div class="ico">🤝</div><h4>Send records to another clinic</h4>
+      <p>Referring a patient somewhere else? Their whole record travels as a file that the other clinic can check hasn't been tampered with.</p></div>
+    <div class="card"><div class="ico">🚪</div><h4>No lock-in, ever</h4>
+      <p>Your data comes out as ordinary CSV or JSON whenever you want, and patient charts print cleanly on paper. Leaving is as easy as arriving — as it should be.</p></div>
+  </div>
+
+  <h2 class="section-title">Grows with your facility</h2>
+  <p class="section-sub">Start small, expand when you do — the workspace expands with you</p>
+  <div class="steps">
+    <div class="step"><div><h4>Create your own departments</h4>
+      <p>Maternity, Outpatients, Pharmacy, Theatre — you make the list. Add, rename, or remove departments any time as your clinic grows. Nothing is fixed in advance.</p></div></div>
+    <div class="step"><div><h4>File every patient where they belong</h4>
+      <p>Pick a patient's department on their record. See at a glance how many patients each department holds.</p></div></div>
+    <div class="step"><div><h4>Add staff, control who sees what</h4>
+      <p>Give each person their own account and role. Need to show one patient's file to an outside consultant? Create a temporary, limited-time login for exactly that.</p></div></div>
+    <div class="step"><div><h4>Multiple buildings? Same records</h4>
+      <p>When you open a second site, turn on the built-in web server and devices stay in step — no migrating, no starting over.</p></div></div>
+  </div>
+
+  <h2 class="section-title">When the worst happens</h2>
+  <p class="section-sub">Two safety nets, both under your control</p>
+  <div class="grid2wide">
+    <div class="card"><div class="ico">💾</div><h4>A copy you can hold</h4>
+      <p>One click makes a backup file. Keep it on a flash drive in a drawer. It's a single file — you can email it to yourself if you like.</p></div>
+    <div class="card"><div class="ico">☁️</div><h4>A copy far away, in <em>your</em> cloud</h4>
+      <p>If fire or flood takes the whole building, the flash drive goes with it. So MedFlow can also send an encrypted copy to a cloud folder <strong>you own</strong> — Google Drive-style WebDAV or any S3-compatible bucket. It's scrambled with a secret phrase only your clinic knows: the cloud company stores unreadable data and nobody but you can open it. MedFlow never sees your records and never charges you per month for storage.</p></div>
   </div>
 
   <h2 class="section-title">How it works</h2>
@@ -75,10 +98,21 @@
 
   <div class="banner">
     <div>
+      <h3>Built for the places other software forgets</h3>
+      <p>Rural clinics. Crisis response. Areas where the internet comes and goes.
+         MedFlow keeps every record safely on the machines in front of you —
+         and when a connection does appear, it can catch up on its own.
+         No internet, no problem. Internet, better.</p>
+    </div>
+    <a class="btn" href="/guide">Read the guide</a>
+  </div>
+
+  <div class="banner">
+    <div>
       <h3>Run it yourself in one command</h3>
       <p>The web workspace and API are built in — no separate frontend to deploy.</p>
     </div>
-    <a class="btn" href="/guide">Read the guide</a>
+    <a class="btn" href="/features">See all features</a>
   </div>
 </div>
 

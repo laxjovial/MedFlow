@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.runtime_config import Config
+from app.runtime_config import Config, SessionConfig
 from app.errors import (
     MedFlowError,
     NotFoundError,
@@ -28,7 +28,14 @@ from app.server.deps import (
     require,
 )
 from app.server.pairing import PairingError, pairing
+from app.server import sessions as sessions_policy
 from app.server.tokens import issue
+from app.services.offsite import (
+    OffsiteBackupService,
+    OffsiteError,
+    load_keys,
+    save_keys,
+)
 
 OPENAPI_METADATA = dict(
     title="MedFlow API",
@@ -47,6 +54,7 @@ OPENAPI_METADATA = dict(
 class LoginRequest(BaseModel):
     username: str
     password: str
+    remember: bool = False   # "keep me signed in"
 
 
 class SignupRequest(BaseModel):
@@ -58,6 +66,7 @@ class SignupRequest(BaseModel):
 
 class GoogleLoginRequest(BaseModel):
     id_token: str
+    remember: bool = False
 
 
 class PairingStart(BaseModel):
@@ -81,6 +90,39 @@ class AutomationRuleIn(BaseModel):
     action: str
 
 
+class SessionPolicyIn(BaseModel):
+    """Admin-settable session lifetimes (all optional, partial updates)."""
+
+    token_ttl_hours: int | None = None
+    remember_me_days: int | None = None
+    sliding_refresh: bool | None = None
+
+
+class UnitRename(BaseModel):
+    name: str
+
+
+class CloudBackupIn(BaseModel):
+    """Off-site backup settings; credential fields are write-only."""
+
+    enabled: bool | None = None
+    provider: str | None = None          # none | s3 | webdav
+    endpoint: str | None = None
+    bucket: str | None = None
+    prefix: str | None = None
+    region: str | None = None
+    auto_upload: bool | None = None
+    keep_last_uploads: int | None = None
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    username: str | None = None
+    password: str | None = None
+
+
+class CloudPassphrase(BaseModel):
+    passphrase: str
+
+
 class TempUserRequest(BaseModel):
     label: str
     hours: float = 24
@@ -101,6 +143,8 @@ class PatientCreate(BaseModel):
     medical_history: str | None = None
     diagnosis: str | None = None
     notes: str | None = None
+    department_id: str | int | None = None
+    department: str | None = None
 
 
 class PatientUpdate(BaseModel):
@@ -117,6 +161,8 @@ class PatientUpdate(BaseModel):
     medical_history: str | None = None
     diagnosis: str | None = None
     notes: str | None = None
+    department_id: str | int | None = None
+    department: str | None = None
 
 
 class VitalsCreate(BaseModel):
@@ -251,14 +297,19 @@ def create_app(config: Config | None = None, db=None, repos=None,
         except MedFlowError as exc:
             raise HTTPException(status_code=401, detail=str(exc))
         secret = request.app.state.token_secret
+        policy = sessions_policy.policy_from(
+            request.app.state.config.session if request.app.state.config else None)
+        ttl = sessions_policy.ttl_for(policy, body.remember)
         token = issue({
             "sub": user.user_id,
             "username": user.username,
             "role": user.role,
             "display_name": user.display_name,
-        }, secret)
+            "remember": body.remember,
+        }, secret, ttl=ttl)
         return {
             "token": token,
+            "session": {"remember": body.remember, "expires_in": ttl},
             "user": {
                 "id": user.user_id, "username": user.username,
                 "display_name": user.display_name, "role": user.role,
@@ -285,8 +336,11 @@ def create_app(config: Config | None = None, db=None, repos=None,
         except MedFlowError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         secret = request.app.state.token_secret
+        policy = sessions_policy.policy_from(
+            request.app.state.config.session if request.app.state.config else None)
         token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role}, secret)
+                       "role": user.role}, secret,
+                      ttl=policy.normal_ttl)
         return {"token": token, "user": {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
@@ -317,8 +371,11 @@ def create_app(config: Config | None = None, db=None, repos=None,
         except MedFlowError as exc:
             raise HTTPException(status_code=401, detail=str(exc))
         secret = request.app.state.token_secret
+        policy = sessions_policy.policy_from(
+            request.app.state.config.session if request.app.state.config else None)
+        ttl = sessions_policy.ttl_for(policy, body.remember)
         token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role}, secret)
+                       "role": user.role, "remember": body.remember}, secret, ttl=ttl)
         return {"token": token, "user": {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
@@ -375,8 +432,10 @@ def create_app(config: Config | None = None, db=None, repos=None,
         except MedFlowError as exc:
             raise HTTPException(status_code=401, detail=str(exc))
         secret = request.app.state.token_secret
+        policy = sessions_policy.policy_from(
+            request.app.state.config.session if request.app.state.config else None)
         token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role}, secret)
+                       "role": user.role}, secret, ttl=policy.remember_ttl)
         return {"token": token, "identity": identity, "user": {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
@@ -430,6 +489,72 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "id": user["sub"], "username": user["username"],
             "display_name": user["display_name"], "role": user["role"],
         }
+
+    @app.post("/api/auth/refresh", tags=["auth"])
+    def refresh_session(request: Request = None, user=Depends(current_user)):
+        """Roll the session's expiry forward while the user stays active.
+
+        The web workspace calls this hourly; a clinic on a long shift is
+        never logged out mid-visit. Remembered sessions always renew;
+        ordinary ones follow the operator's sliding-refresh setting.
+        """
+        policy = sessions_policy.policy_from(
+            request.app.state.config.session if request.app.state.config else None)
+        remember = bool(user.get("remember"))
+        record = request.app.state.repos["users"].get(int(user["sub"]))
+        payload = {
+            "sub": record.user_id if record else user["sub"],
+            "username": user["username"],
+            "role": user["role"],
+            "remember": remember,
+        }
+        rolled = sessions_policy.refreshed_payload(payload, policy)
+        ttl = sessions_policy.ttl_for(policy, remember)
+        token = issue(payload, request.app.state.token_secret, ttl=ttl)
+        return {"token": token, "refreshed": bool(rolled), "expires_in": ttl}
+
+    @app.get("/api/settings/session", tags=["settings"])
+    def get_session_policy(request: Request = None):
+        """Public summary so the login page can explain its checkbox."""
+        cfg = request.app.state.config
+        s = cfg.session if cfg else SessionConfig()
+        return {"token_ttl_hours": s.token_ttl_hours,
+                "remember_me_days": s.remember_me_days,
+                "sliding_refresh": bool(s.sliding_refresh)}
+
+    @app.patch("/api/settings/session", tags=["settings"])
+    def set_session_policy(body: SessionPolicyIn, user=Depends(current_user),
+                           request: Request = None):
+        """Administrator sets how long sign-ins last. Applies to new logins."""
+        require(user, "users.manage")
+        cfg = request.app.state.config
+        if cfg is None:
+            raise HTTPException(status_code=503, detail="No runtime config")
+        s = cfg.session
+        if body.token_ttl_hours is not None:
+            if not 1 <= body.token_ttl_hours <= 8760:
+                raise HTTPException(status_code=400,
+                                    detail="Session hours must be 1-8760")
+            s.token_ttl_hours = int(body.token_ttl_hours)
+        if body.remember_me_days is not None:
+            if not 1 <= body.remember_me_days <= 365:
+                raise HTTPException(status_code=400,
+                                    detail="Remember-me days must be 1-365")
+            s.remember_me_days = int(body.remember_me_days)
+        if body.sliding_refresh is not None:
+            s.sliding_refresh = bool(body.sliding_refresh)
+        cfg.save()
+        from app.models import AuditEvent
+        request.app.state.repos["audit"].record(AuditEvent(
+            action="updated", entity_type="session_policy",
+            entity_id=user["username"],
+            details=(f"Session policy: {s.token_ttl_hours}h sign-ins, "
+                     f"{s.remember_me_days}d remember-me, "
+                     f"rolling {'on' if s.sliding_refresh else 'off'}"),
+            actor=user["username"], device_id="server"))
+        return {"token_ttl_hours": s.token_ttl_hours,
+                "remember_me_days": s.remember_me_days,
+                "sliding_refresh": bool(s.sliding_refresh)}
 
     # ------------------------------------------------------------ patients
 
@@ -618,6 +743,51 @@ def create_app(config: Config | None = None, db=None, repos=None,
         svc = OrgService(repos, SecurityService(repos["users"]))
         return svc.create_unit(body.name, body.kind, body.parent_id).to_row()
 
+    @app.get("/api/departments", tags=["org"])
+    def list_departments(user=Depends(current_user), request: Request = None):
+        """Departments for dropdowns and lists — needs only patient visibility.
+
+        Returns id/name plus a live count of patients filed under each, so
+        managers can see the shape of their facility at a glance.
+        """
+        require(user, "patients.view")
+        repos = request.app.state.repos
+        counts = repos["units"].patient_counts()
+        return [
+            {"id": u.unit_id, "name": u.name, "kind": u.kind,
+             "patient_count": counts.get(u.unit_id, 0)}
+            for u in repos["units"].list()
+        ]
+
+    @app.patch("/api/org/units/{unit_id}", tags=["org"])
+    def rename_unit(unit_id: int, body: UnitRename,
+                    user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        repos = request.app.state.repos
+        from app.services.org import OrgService
+        from app.services.security import SecurityService
+        svc = OrgService(repos, SecurityService(repos["users"]))
+        try:
+            return svc.rename_unit(unit_id, body.name).to_row()
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        # ValidationError bubbles to the global handler (422 + field errors).
+
+    @app.delete("/api/org/units/{unit_id}", tags=["org"])
+    def delete_unit(unit_id: int, user=Depends(current_user),
+                    request: Request = None):
+        require(user, "settings.manage")
+        repos = request.app.state.repos
+        from app.services.org import OrgService
+        from app.services.security import SecurityService
+        svc = OrgService(repos, SecurityService(repos["users"]))
+        try:
+            svc.delete_unit(unit_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        # ValidationError bubbles to the global handler (422 + field errors).
+        return {"deleted": unit_id}
+
     @app.get("/api/org/users", tags=["org"])
     def list_users(user=Depends(current_user), request: Request = None):
         require(user, "users.manage")
@@ -687,6 +857,156 @@ def create_app(config: Config | None = None, db=None, repos=None,
     def prune_backups(user=Depends(current_user), request: Request = None):
         require(user, "settings.manage")
         return {"removed": _backup_service(request).prune()}
+
+    # ----------------------------------------------------- off-site backups
+
+    def _offsite(request: Request):
+        """Service + data dir for off-site operations."""
+        cfg = request.app.state.config
+        if cfg is None:
+            raise HTTPException(status_code=503, detail="No runtime config")
+        data_dir = Path(cfg.data_dir) if cfg.data_dir else Path("data")
+        return OffsiteBackupService(cfg.cloud_backup, load_keys(data_dir)), cfg
+
+    def _cloud_summary(request: Request) -> dict:
+        cfg = request.app.state.config
+        c = cfg.cloud_backup
+        svc, _ = _offsite(request)
+        return {
+            "enabled": c.enabled,
+            "provider": c.provider,
+            "endpoint": c.endpoint,
+            "bucket": c.bucket,
+            "prefix": c.prefix,
+            "region": c.region,
+            "auto_upload": c.auto_upload,
+            "keep_last_uploads": c.keep_last_uploads,
+            "has_credentials": svc.credentials != ("", ""),
+            "configured": svc.configured(),
+            "last_upload_at": c.last_upload_at,
+            "last_upload_status": c.last_upload_status,
+        }
+
+    @app.get("/api/settings/cloud-backup", tags=["settings"])
+    def get_cloud_backup(user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        return _cloud_summary(request)
+
+    @app.put("/api/settings/cloud-backup", tags=["settings"])
+    def set_cloud_backup(body: CloudBackupIn, user=Depends(current_user),
+                         request: Request = None):
+        """Point MedFlow at the clinic's own bucket or WebDAV share.
+
+        Credential fields are write-only: they are stored in
+        ``offsite_keys.json`` (0600) and never echoed back.
+        """
+        require(user, "settings.manage")
+        cfg = request.app.state.config
+        c = cfg.cloud_backup
+        changed = []
+        if body.provider is not None:
+            if body.provider not in ("none", "s3", "webdav"):
+                raise HTTPException(status_code=400,
+                                    detail="Provider must be none, s3 or webdav")
+            c.provider = body.provider
+            changed.append(f"provider={body.provider}")
+        for field in ("endpoint", "bucket", "prefix", "region"):
+            value = getattr(body, field)
+            if value is not None:
+                if field == "endpoint" and value.strip() and not \
+                        value.startswith(("http://", "https://")):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Endpoint must start with http:// or https://")
+                setattr(c, field, value.strip() or None)
+                changed.append(f"{field} set")
+        if body.enabled is not None:
+            c.enabled = body.enabled
+            changed.append("enabled" if body.enabled else "disabled")
+        if body.auto_upload is not None:
+            c.auto_upload = body.auto_upload
+            changed.append("auto_upload" if body.auto_upload else "manual upload")
+        if body.keep_last_uploads is not None:
+            if not 1 <= body.keep_last_uploads <= 365:
+                raise HTTPException(status_code=400,
+                                    detail="Keep 1-365 uploads")
+            c.keep_last_uploads = int(body.keep_last_uploads)
+            changed.append(f"keep last {c.keep_last_uploads}")
+
+        if body.access_key_id or body.secret_access_key or body.username or body.password:
+            data_dir = Path(cfg.data_dir) if cfg.data_dir else Path("data")
+            keys = load_keys(data_dir)
+            if body.access_key_id:
+                keys["access_key_id"] = body.access_key_id.strip()
+            if body.secret_access_key:
+                keys["secret_access_key"] = body.secret_access_key.strip()
+            if body.username:
+                keys["username"] = body.username.strip()
+            if body.password:
+                keys["password"] = body.password
+            save_keys(data_dir, keys)
+            changed.append("credentials saved")
+
+        cfg.save()
+        from app.models import AuditEvent
+        request.app.state.repos["audit"].record(AuditEvent(
+            action="updated", entity_type="cloud_backup",
+            entity_id=c.provider, details="; ".join(changed) or "no change",
+            actor=user["username"], device_id="server"))
+        return _cloud_summary(request)
+
+    @app.post("/api/settings/cloud-backup/test", tags=["settings"])
+    def test_cloud_backup(user=Depends(current_user), request: Request = None):
+        """Check the storage is reachable and credentials work."""
+        require(user, "settings.manage")
+        svc, _ = _offsite(request)
+        if not svc.configured():
+            return {"ok": False,
+                    "error": "Fill in provider, endpoint and credentials first."}
+        try:
+            objects = svc.list_remote()
+            return {"ok": True, "objects": len(objects)}
+        except OffsiteError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/settings/cloud-backup/upload", tags=["settings"])
+    def upload_cloud_backup(body: CloudPassphrase,
+                            user=Depends(current_user), request: Request = None):
+        """Create a local backup, encrypt it, and push it off-site.
+
+        The passphrase never leaves this server unencrypted: it derives the
+        AES key locally, and only the ciphertext travels. Losing it means
+        losing the remote copies — it is never stored anywhere.
+        """
+        require(user, "settings.manage")
+        if len(body.passphrase) < 8:
+            raise HTTPException(status_code=400,
+                                detail="Use a passphrase of at least 8 characters")
+        svc, cfg = _offsite(request)
+        if not svc.configured():
+            raise HTTPException(status_code=400,
+                                detail="Cloud backup is not fully configured")
+        path = _backup_service(request).create_backup(label="offsite")
+        try:
+            result = svc.upload(path, body.passphrase)
+        except OffsiteError as exc:
+            cfg.cloud_backup.last_upload_status = f"failed: {exc}"
+            cfg.save()
+            raise HTTPException(status_code=502, detail=str(exc))
+        cfg.cloud_backup.last_upload_at = result["uploaded"]
+        cfg.cloud_backup.last_upload_status = "ok"
+        cfg.save()
+        try:
+            pruned = svc.prune_remote()
+        except OffsiteError:
+            pruned = 0
+        from app.models import AuditEvent
+        request.app.state.repos["audit"].record(AuditEvent(
+            action="created", entity_type="cloud_backup",
+            entity_id=result["key"],
+            details=f"Encrypted backup uploaded ({result['bytes']} bytes)",
+            actor=user["username"], device_id="server"))
+        return {**result, "pruned": pruned}
 
     # ---------------------------------------------------------- automation
 

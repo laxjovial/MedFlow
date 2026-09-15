@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from datetime import date
 
-from app.errors import AuthorizationError, DuplicatePatientError, NotFoundError
+from app.errors import (AuthorizationError, DuplicatePatientError,
+                        NotFoundError, ValidationError)
 from app.models import (
     AuditEvent,
     Patient,
@@ -113,8 +114,35 @@ class PatientService:
     # ------------------------------------------------------------------ #
     # mutations
 
+    # ------------------------------------------------------------------ #
+    # departments
+
+    def _resolve_department(self, data: dict) -> int | None:
+        """Resolve a requested department (id, or exact name) or None.
+
+        The web sends ids; the desktop's dropdown sends names — both faces
+        go through this one path and get the same validation.
+        """
+        raw = data.get("department_id") or data.get("department")
+        if raw in ("", None, "none"):
+            return None
+        unit = None
+        try:
+            unit = self.repos["units"].get(int(raw))
+        except (TypeError, ValueError):
+            for candidate in self.repos["units"].list():
+                if candidate.kind != "organization" and \
+                        candidate.name.lower() == str(raw).strip().lower():
+                    unit = candidate
+                    break
+        if not unit:
+            raise ValidationError({"department_id": [
+                f"Department '{raw}' does not exist."]})
+        return unit.unit_id
+
     def register(self, data: dict) -> Patient:
         """Validate and create a patient; returns the persisted model."""
+        department_id = self._resolve_department(data)
         clean = self.validator.validate(data)
 
         if clean.get("email"):
@@ -138,6 +166,7 @@ class PatientService:
             medical_history=clean.get("medical_history"),
             diagnosis=clean.get("diagnosis"),
             notes=clean.get("notes"),
+            origin_unit_id=department_id,
             created_by=self.actor,
             updated_by=self.actor,
             device_id=self.device_id,
@@ -157,6 +186,8 @@ class PatientService:
         patient = self.repos["patients"].get(patient_id)
         if not patient:
             raise NotFoundError(f"Patient #{patient_id} does not exist.")
+
+        department_id = self._resolve_department(data)
 
         # Merge onto current values so partial forms validate completely.
         merged = {
@@ -192,6 +223,11 @@ class PatientService:
                 setattr(patient, field, clean[field])
         patient.updated_by = self.actor
         patient.device_id = self.device_id
+
+        if department_id != patient.origin_unit_id:
+            patient.origin_unit_id = department_id
+            if "origin_unit_id" not in changed_fields:
+                changed_fields = list(changed_fields or []) + ["origin_unit_id"]
 
         patient = self.repos["patients"].update(patient, changed_fields)
         summary = ", ".join(changed_fields) or "no fields"

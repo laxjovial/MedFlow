@@ -440,13 +440,53 @@ class UnitRepository(_Repository):
         return unit
 
     def ensure_root(self, name: str = "Main Facility") -> Unit:
-        """Guarantee an organization root exists; returns it."""
+        """Guarantee the organization root exists; returns it.
+
+        Only a unit with ``kind = 'organization'`` counts as the root —
+        top-level departments (no parent) must not be mistaken for it.
+        """
         row = self._query_one(
-            f"SELECT * FROM {self.table} WHERE parent_id IS NULL LIMIT 1"
+            f"SELECT * FROM {self.table} "
+            "WHERE parent_id IS NULL AND kind = 'organization' LIMIT 1"
         )
         if row:
             return Unit.from_row(row)
         return self.insert(Unit(name=name, kind="organization"))
+
+    def rename(self, unit_id: int, name: str) -> Unit | None:
+        self._exec(f"UPDATE {self.table} SET name = ? WHERE unit_id = ?",
+                   (name, unit_id))
+        return self.get(unit_id)
+
+    def delete(self, unit_id: int) -> bool:
+        """Remove a department only when nothing references it."""
+        cur = self._exec(f"DELETE FROM {self.table} WHERE unit_id = ?",
+                         (unit_id,))
+        return cur.rowcount > 0
+
+    def usage(self, unit_id: int) -> dict:
+        """What points at this unit — guards deletion and informs the UI."""
+        def _scalar(sql: str) -> int:
+            row = self._query_one(sql, (unit_id,))
+            return int(row[next(iter(row))]) if row else 0
+        return {
+            "patients": _scalar(
+                "SELECT COUNT(*) AS c FROM patients WHERE origin_unit_id = ?"),
+            "staff": _scalar(
+                "SELECT COUNT(*) AS c FROM users WHERE unit_id = ?"),
+            "appointments": _scalar(
+                "SELECT COUNT(*) AS c FROM appointments WHERE unit_id = ?"),
+            "children": _scalar(
+                "SELECT COUNT(*) AS c FROM units WHERE parent_id = ?"),
+        }
+
+    def patient_counts(self) -> dict[int, int]:
+        """Patients per unit, for department lists and dashboards."""
+        rows = self._query_all(
+            "SELECT origin_unit_id AS uid, COUNT(*) AS n FROM patients "
+            "WHERE origin_unit_id IS NOT NULL AND deleted = 0 "
+            "GROUP BY origin_unit_id")
+        return {int(r["uid"]): int(r["n"]) for r in rows}
 
 
 class DeviceRepository(_Repository):

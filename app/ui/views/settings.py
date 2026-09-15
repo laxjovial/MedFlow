@@ -59,6 +59,18 @@ class SettingsView(ctk.CTkFrame):
         seg.set(app.config.theme)
         seg.grid(row=1, column=0, sticky="w", padx=12, pady=(2, 12))
 
+        # ------------------------------------------------------- departments
+        if "settings.manage" in app.permissions:
+            depts = Section(scroll, "Departments")
+            depts.pack(fill="x", pady=(0, 12))
+            drow = ctk.CTkFrame(depts, fg_color="transparent")
+            drow.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 6))
+            ctk.CTkButton(drow, text="＋  New department", font=F_BOLD,
+                          height=34, command=self._add_department).pack(side="left")
+            self.dept_list = ctk.CTkFrame(depts, fg_color="transparent")
+            self.dept_list.grid(row=2, column=0, sticky="ew", padx=12,
+                                pady=(0, 12))
+
         # ---------------------------------------------------------- backups
         backups = Section(scroll, "Backups")
         backups.pack(fill="x", pady=(0, 12))
@@ -72,6 +84,25 @@ class SettingsView(ctk.CTkFrame):
                       command=self._restore).pack(side="left", padx=8)
         self.backup_list = ctk.CTkFrame(backups, fg_color="transparent")
         self.backup_list.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+
+        # ------------------------------------------------- off-site cloud copy
+        cloud = Section(scroll, "Off-site cloud copy (encrypted)")
+        cloud.pack(fill="x", pady=(0, 12))
+        crow = ctk.CTkFrame(cloud, fg_color="transparent")
+        crow.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 6))
+        ctk.CTkLabel(cloud, text=self.app.cloud_status(), font=F_SMALL,
+                     text_color=MUTED, anchor="w").grid(
+            row=2, column=0, sticky="ew", padx=12)
+        ctk.CTkButton(crow, text="Configure…", font=F_SMALL, height=32,
+                      command=self._configure_cloud).pack(side="left")
+        ctk.CTkButton(crow, text="Upload encrypted copy now", font=F_SMALL,
+                      height=32, command=self._cloud_upload).pack(side="left",
+                                                                 padx=8)
+        ctk.CTkLabel(cloud, text="Stored in your own bucket or cloud drive, "
+                                 "unreadable without your passphrase.",
+                     font=F_SMALL, text_color=MUTED,
+                     anchor="w").grid(row=3, column=0, sticky="ew", padx=12,
+                                      pady=(6, 10))
 
         # ---------------------------------------------------------- recycle bin
         bin_ = Section(scroll, "Recycle bin (soft-deleted records)")
@@ -136,6 +167,34 @@ class SettingsView(ctk.CTkFrame):
     # ------------------------------------------------------------------ #
 
     def refresh_lists(self) -> None:
+        if hasattr(self, "dept_list"):
+            for w in self.dept_list.winfo_children():
+                w.destroy()
+            try:
+                units = [u for u in self.app.org.list_units()
+                         if u.kind != "organization"]
+            except Exception:
+                units = []
+            if not units:
+                ctk.CTkLabel(self.dept_list, text="No departments yet",
+                             font=F_SMALL, text_color=MUTED,
+                             anchor="w").pack(fill="x")
+            for unit in units:
+                row = ctk.CTkFrame(self.dept_list, fg_color="transparent")
+                row.pack(fill="x", pady=1)
+                ctk.CTkLabel(row, text=unit.name, font=F_SMALL,
+                             anchor="w").pack(side="left")
+                ctk.CTkButton(row, text="Rename", font=F_SMALL, height=26,
+                              width=76,
+                              command=lambda uid=unit.unit_id, n=unit.name:
+                              self._rename_department(uid, n)).pack(side="right",
+                                                                    padx=(6, 0))
+                ctk.CTkButton(row, text="Delete", font=F_SMALL, height=26,
+                              width=76, fg_color="#FDECEA",
+                              hover_color="#F8D7D4", text_color=DANGER,
+                              command=lambda uid=unit.unit_id, n=unit.name:
+                              self._delete_department(uid, n)).pack(side="right")
+
         if hasattr(self, "temp_list"):
             for w in self.temp_list.winfo_children():
                 w.destroy()
@@ -268,6 +327,71 @@ class SettingsView(ctk.CTkFrame):
         ], lambda v: self.app.set_storage_mode(
             local=False, api_base_url=v["api_base_url"]),
             submit_text="Save")
+
+    def _add_department(self) -> None:
+        FormDialog(self, "New department", [
+            FormField("name", "Department name", required=True,
+                      placeholder="e.g. Maternity, Outpatient, Pharmacy"),
+        ], self._submit_department, submit_text="Create")
+
+    def _submit_department(self, values: dict) -> None:
+        self.app.org.create_unit(values["name"].strip(), "department")
+        self.app.toast("Department created", "ok")
+        self.refresh_lists()
+
+    def _rename_department(self, unit_id: int, current: str) -> None:
+        FormDialog(self, f"Rename — {current}", [
+            FormField("name", "New name", required=True),
+        ], lambda v: (self.app.org.rename_unit(unit_id, v["name"]),
+                      self.app.toast("Department renamed", "ok"),
+                      self.refresh_lists()), submit_text="Rename")
+
+    def _delete_department(self, unit_id: int, name: str) -> None:
+        if not self.app.confirm("Delete department",
+                                f'Delete "{name}"? Departments with records, '
+                                "staff or appointments cannot be deleted."):
+            return
+        try:
+            self.app.org.delete_unit(unit_id)
+            self.app.toast("Department deleted", "ok")
+        except Exception as exc:
+            self.app.toast(str(exc), "error")
+        self.refresh_lists()
+
+    def _configure_cloud(self) -> None:
+        FormDialog(self, "Off-site cloud copy", [
+            FormField("provider", "Provider", kind="option",
+                      options=("s3", "webdav")),
+            FormField("endpoint", "Endpoint URL", required=True,
+                      placeholder="https://s3.af-south-1.amazonaws.com"),
+            FormField("bucket", "Bucket / folder", required=True),
+            FormField("prefix", "Folder prefix", placeholder="optional"),
+            FormField("access_key_id", "Access key / username"),
+            FormField("secret_access_key", "Secret key / password"),
+            FormField("enabled", "Enable uploads", kind="option",
+                      options=("no", "yes")),
+        ], self._submit_cloud, submit_text="Save")
+
+    def _submit_cloud(self, values: dict) -> None:
+        self.app.save_cloud_settings(values)
+        self.app.toast("Cloud settings saved", "ok")
+        self.refresh_lists()
+
+    def _cloud_upload(self) -> None:
+        FormDialog(self, "Upload encrypted copy", [
+            FormField("passphrase", "Encryption passphrase",
+                      required=True,
+                      placeholder="min 8 characters — needed later to restore"),
+        ], self._submit_cloud_upload, submit_text="Encrypt & upload")
+
+    def _submit_cloud_upload(self, values: dict) -> None:
+        try:
+            name = self.app.cloud_upload_now(values["passphrase"])
+            self.app.confirm("Off-site copy uploaded",
+                             f"{name}\n\nKeep the passphrase safe — MedFlow "
+                             "never stores it.")
+        except Exception as exc:
+            self.app.toast(str(exc), "error")
 
     def _backup_now(self) -> None:
         try:

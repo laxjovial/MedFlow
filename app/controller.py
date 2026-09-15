@@ -288,6 +288,77 @@ class AppController:
         self.config.save(self.data_dir)
         self.toast("Storage mode updated", "ok")
 
+    # ------------------------------------------------------- off-site cloud
+
+    def cloud_status(self) -> str:
+        """One-line summary of the off-site copy for Settings."""
+        from app.services.offsite import OffsiteBackupService, load_keys
+        c = self.config.cloud_backup
+        svc = OffsiteBackupService(c, load_keys(self.data_dir))
+        state = ("on" if c.enabled else "off") + (
+            f" — {c.provider}" if c.provider != "none" else "")
+        if c.enabled and not svc.configured():
+            state += " (settings incomplete)"
+        if c.last_upload_status == "ok" and c.last_upload_at:
+            state += f" · last upload {c.last_upload_at}"
+        elif c.last_upload_status:
+            state += f" · last attempt: {c.last_upload_status}"
+        return state
+
+    def save_cloud_settings(self, values: dict) -> None:
+        """Store off-site backup configuration; secrets go to offsite_keys.json."""
+        from app.services.offsite import load_keys, save_keys
+        c = self.config.cloud_backup
+        c.provider = values.get("provider") or "none"
+        c.endpoint = (values.get("endpoint") or "").strip() or None
+        c.bucket = (values.get("bucket") or "").strip() or None
+        c.prefix = (values.get("prefix") or "").strip() or None
+        c.enabled = str(values.get("enabled", "")).lower() in ("yes", "true", "on", "1")
+        keys = load_keys(self.data_dir)
+        if c.provider == "s3":
+            if values.get("access_key_id"):
+                keys["access_key_id"] = values["access_key_id"].strip()
+            if values.get("secret_access_key"):
+                keys["secret_access_key"] = values["secret_access_key"].strip()
+        else:
+            if values.get("access_key_id"):
+                keys["username"] = values["access_key_id"].strip()
+            if values.get("secret_access_key"):
+                keys["password"] = values["secret_access_key"]
+        save_keys(self.data_dir, keys)
+        self.config.save()
+        self.repos["audit"].record(_audit_event(
+            action="updated", entity_type="cloud_backup", entity_id=c.provider,
+            actor=self.actor or "system", device_id=self.device_id))
+
+    def cloud_upload_now(self, passphrase: str) -> str:
+        """Backup → encrypt with the passphrase → push off-site."""
+        from app.services.offsite import (
+            OffsiteBackupService,
+            OffsiteError,
+            load_keys,
+        )
+        c = self.config.cloud_backup
+        svc = OffsiteBackupService(c, load_keys(self.data_dir))
+        if not svc.configured():
+            raise OffsiteError("Configure the provider, endpoint and keys first.")
+        if len(passphrase or "") < 8:
+            raise OffsiteError("Use a passphrase of at least 8 characters.")
+        path = self.create_backup()
+        result = svc.upload(path, passphrase)
+        c.last_upload_at = result["uploaded"]
+        c.last_upload_status = "ok"
+        self.config.save()
+        self.repos["audit"].record(_audit_event(
+            action="created", entity_type="cloud_backup", entity_id=result["key"],
+            details=f"Encrypted off-site copy uploaded ({result['bytes']} bytes)",
+            actor=self.actor or "system", device_id=self.device_id))
+        try:
+            svc.prune_remote()
+        except OffsiteError:
+            pass
+        return result["uploaded"]
+
     def create_backup(self) -> Path:
         return self.backups.create_backup(label="manual")
 
