@@ -135,7 +135,9 @@ class SecurityService:
     # users
 
     def create_user(self, username: str, display_name: str, password: str,
-                    role: str, unit_id: int | None = None) -> User:
+                    role: str, unit_id: int | None = None,
+                    job_title: str | None = None,
+                    phone: str | None = None) -> User:
         if role not in ROLE_PERMISSIONS:
             raise AuthorizationError(f"Unknown role: {role}")
         if len(password) < 8:
@@ -147,6 +149,8 @@ class SecurityService:
             display_name=display_name,
             role=role,
             unit_id=unit_id,
+            job_title=job_title or None,
+            phone=phone or None,
             password_hash=hash_password(password),
         )
         return self.users.insert(user)

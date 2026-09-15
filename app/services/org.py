@@ -103,8 +103,11 @@ class OrgService:
         return self.repos["users"].list(active_only=False)
 
     def create_user(self, username: str, display_name: str, password: str,
-                    role: str, unit_id: int | None = None) -> User:
-        user = self.security.create_user(username, display_name, password, role, unit_id)
+                    role: str, unit_id: int | None = None,
+                    job_title: str | None = None,
+                    phone: str | None = None) -> User:
+        user = self.security.create_user(username, display_name, password,
+                                         role, unit_id, job_title, phone)
         self.repos["audit"].record(AuditEvent(
             action=EVENT_CREATED, entity_type="user", entity_id=str(user.user_id),
             details=f"Created {role} account '{username}'", actor=self.actor,

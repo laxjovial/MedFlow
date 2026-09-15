@@ -344,3 +344,26 @@ def test_analytics_endpoint(client, auth):
     assert isinstance(a["registrations_by_week"], list)
     assert "completed" in a["appointment_funnel"]
     assert any(d["diagnosis"] == "Hypertension" for d in a["top_diagnoses"])
+
+
+def test_staff_accounts_carry_details(client, auth):
+    """Colleagues get job titles, departments and phones — editable later."""
+    depts = client.get("/api/departments", headers=auth).json()
+    unit_id = depts[0]["id"] if depts else None
+    r = client.post("/api/org/users", headers=auth, json={
+        "username": "ngozi.n", "display_name": "Ngozi Nwosu",
+        "password": "midwife-pass-1", "role": "nurse",
+        "job_title": "Senior Midwife", "phone": "+2348020001111",
+        "unit_id": unit_id,
+    })
+    assert r.status_code == 201, r.text
+    nurse = r.json()
+    assert nurse["job_title"] == "Senior Midwife"
+    assert nurse["phone"] == "+2348020001111"
+    assert nurse["unit_id"] == unit_id
+
+    up = client.patch(f"/api/org/users/{nurse['user_id']}", headers=auth,
+                      json={"job_title": "Ward Sister"})
+    assert up.status_code == 200
+    assert up.json()["job_title"] == "Ward Sister"
+    assert up.json()["phone"] == "+2348020001111"  # untouched fields survive

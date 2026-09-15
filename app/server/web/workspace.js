@@ -828,36 +828,88 @@ async function loadBin() {
 async function loadStaff() {
   try {
     const users = await api("/org/users");
+    const unitName = new Map(deptCache.map(d => [d.id, d.name]));
     fillTable($("#staff-table"), users, [
       ["username", "Username"],
       ["display_name", "Name"],
+      [null, "Job title", r => esc(r.job_title || "—")],
+      [null, "Department", r => unitName.get(r.unit_id) || "—"],
+      [null, "Phone", r => esc(r.phone || "—")],
       ["role", "Role"],
       [null, "State", r => r.active ? "active" : "disabled"],
       [null, "", () => ""],
     ]);
+    const unitSel = $("#staff-unit");
+    if (unitSel) {
+      const cur = unitSel.value;
+      unitSel.innerHTML = '<option value="">No department</option>' +
+        deptCache.filter(d => d.kind !== "organization")
+          .map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+      if ([...unitSel.options].some(o => o.value === cur)) unitSel.value = cur;
+    }
     $$("#staff-table tbody tr").forEach((tr, i) => {
       const u = users[i];
       if (u && !tr.querySelector("td[colspan]")) {
         const cell = tr.lastElementChild;
-        const btn = document.createElement("button");
-        btn.className = "btn";
-        btn.style.padding = "4px 10px";
-        btn.textContent = u.active ? "Disable" : "Enable";
-        btn.addEventListener("click", async () => {
+        const edit = document.createElement("button");
+        edit.className = "btn ghost";
+        edit.style.padding = "4px 10px";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => {
+          const title = prompt("Job title (blank to clear)", u.job_title || "");
+          if (title === null) return;
+          const phone = prompt("Phone (blank to clear)", u.phone || "");
+          if (phone === null) return;
+          api(`/org/users/${u.user_id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ job_title: title, phone: phone }),
+          }).then(loadStaff).catch(err => toast(err.message));
+        });
+        const toggle = document.createElement("button");
+        toggle.className = "btn";
+        toggle.style.padding = "4px 10px";
+        toggle.style.marginLeft = "6px";
+        toggle.textContent = u.active ? "Disable" : "Enable";
+        toggle.addEventListener("click", async () => {
           try {
-            await api(`/org/users/${u.id}`, {
+            await api(`/org/users/${u.user_id}`, {
               method: "PATCH", body: JSON.stringify({ active: !u.active }),
             });
             loadStaff();
           } catch (err) { toast(err.message); }
         });
-        cell.appendChild(btn);
+        cell.appendChild(edit);
+        cell.appendChild(toggle);
       }
     });
   } catch (err) {
     fillTable($("#staff-table"), [], [["", ""]]);
   }
 }
+
+$("#staff-form")?.addEventListener("submit", async e => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  const roleMap = {
+    physician: "physician", nurse: "nurse", reception: "reception",
+    technician: "technician", viewer: "viewer", administrator: "administrator",
+  };
+  const payload = {
+    username: data.username.trim().toLowerCase().replace(/\s+/g, "_"),
+    display_name: data.display_name.trim(),
+    password: data.password,
+    role: roleMap[data.role] || data.role,
+    job_title: data.job_title || undefined,
+    phone: data.phone || undefined,
+    unit_id: data.unit_id ? parseInt(data.unit_id, 10) : undefined,
+  };
+  try {
+    await api("/org/users", { method: "POST", body: JSON.stringify(payload) });
+    toast(`Account created for ${payload.display_name}`, "ok");
+    e.target.reset();
+    loadStaff();
+  } catch (err) { toast(err.message); }
+});
 
 async function loadRules() {
   try {

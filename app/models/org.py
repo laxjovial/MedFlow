@@ -59,6 +59,8 @@ class User:
     auth_provider: str = "password"
     expires_at: str | None = None
     scope_patient_ids: str | None = None
+    job_title: str | None = None
+    phone: str | None = None
     active: bool = True
     created_at: datetime | None = None
     user_id: int | None = None

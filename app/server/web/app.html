@@ -295,7 +295,25 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
           </div>
           <div>
             <div class="card" id="staff-card">
-              <h3>Staff accounts</h3>
+              <h3>Staff &amp; colleagues</h3>
+              <p class="muted small">Every account is a person on your team — doctors, nurses, midwives, receptionists, lab scientists. Give each one a role so MedFlow shows them the right tools.</p>
+              <form id="staff-form" class="inline-form">
+                <input name="username" placeholder="Username (e.g. jdoe)" required>
+                <input name="display_name" placeholder="Full name (e.g. Dr. Jane Doe)" required>
+                <input name="password" type="password" placeholder="Starting password (min 8 chars)" required>
+                <select name="role" title="What they do">
+                  <option value="physician">Doctor / physician</option>
+                  <option value="nurse">Nurse / midwife</option>
+                  <option value="reception">Front desk / reception</option>
+                  <option value="technician">Lab / technician</option>
+                  <option value="viewer">View only</option>
+                  <option value="administrator">Administrator</option>
+                </select>
+                <input name="job_title" placeholder="Job title (optional, e.g. Consultant)">
+                <input name="phone" placeholder="Phone (optional)">
+                <select id="staff-unit" name="unit_id" title="Department"><option value="">No department</option></select>
+                <button class="btn primary">Add staff member</button>
+              </form>
               <table id="staff-table" class="table"></table>
             </div>
             <div class="card" id="automation-card">

@@ -230,6 +230,8 @@ class UserCreate(BaseModel):
     password: str
     role: str
     unit_id: int | None = None
+    job_title: str | None = None
+    phone: str | None = None
 
 
 class ImportRows(BaseModel):
@@ -243,6 +245,10 @@ class UserPatch(BaseModel):
     active: bool | None = None
     role: str | None = None
     password: str | None = None
+    display_name: str | None = None
+    job_title: str | None = None
+    phone: str | None = None
+    unit_id: int | None = None
 
 
 class SyncPush(BaseModel):
@@ -873,7 +879,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
         svc = OrgService(repos, SecurityService(repos["users"]))
         return svc.create_user(
             body.username, body.display_name, body.password, body.role,
-            body.unit_id,
+            body.unit_id, body.job_title, body.phone,
         ).to_row()
 
     @app.patch("/api/org/users/{user_id}", tags=["org"])
@@ -883,6 +889,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
         repos = request.app.state.repos
         from app.services.org import OrgService
         from app.services.security import SecurityService
+        from app.models import AuditEvent
+        actor = user["username"]
         svc = OrgService(repos, SecurityService(repos["users"]))
         if body.password:
             svc.change_password(user_id, body.password)
@@ -890,6 +898,21 @@ def create_app(config: Config | None = None, db=None, repos=None,
             svc.change_role(user_id, body.role)
         if body.active is not None:
             svc.set_user_active(user_id, body.active)
+        profile = {k: getattr(body, k) for k in
+                   ("display_name", "job_title", "phone", "unit_id")
+                   if getattr(body, k) is not None}
+        if profile:
+            user = repos["users"].get(user_id)
+            if not user:
+                raise HTTPException(status_code=404, detail="No such user")
+            for key, value in profile.items():
+                setattr(user, key, value)
+            repos["users"].update(user, list(profile))
+            repos["audit"].record(AuditEvent(
+                action="updated", entity_type="user",
+                entity_id=str(user_id),
+                details=f"Profile: {', '.join(profile)}",
+                actor=actor, device_id="server"))
         return repos["users"].get(user_id).to_row()
 
     # ------------------------------------------------------------ backups

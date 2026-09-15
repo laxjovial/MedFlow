@@ -25,6 +25,11 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
         conn.execute("ALTER TABLE users ADD COLUMN expires_at TEXT"),
         conn.execute("ALTER TABLE users ADD COLUMN scope_patient_ids TEXT"),
     )),
+    # v2 -> v3: staff profiles — job title and contact number per account
+    (3, lambda conn: (
+        conn.execute("ALTER TABLE users ADD COLUMN job_title TEXT"),
+        conn.execute("ALTER TABLE users ADD COLUMN phone TEXT"),
+    )),
 ]
 
 
