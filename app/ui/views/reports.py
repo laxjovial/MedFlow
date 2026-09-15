@@ -38,12 +38,23 @@ class ReportsView(ctk.CTkFrame):
         top_prov = Section(body, "Provider workload (30 days)")
         top_prov.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
 
+        funnel = Section(body, "Appointment outcomes (30 days)")
+        funnel.grid(row=2, column=0, sticky="nsew", padx=(0, 7), pady=(14, 0))
+        weeks = Section(body, "New registrations (recent days)")
+        weeks.grid(row=2, column=1, sticky="nsew", padx=(7, 0), pady=(14, 0))
+
         self.dx_list = ctk.CTkScrollableFrame(top_dx, fg_color="transparent",
                                               height=150)
         self.dx_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(2, 10))
         self.prov_list = ctk.CTkScrollableFrame(top_prov, fg_color="transparent",
                                                 height=150)
         self.prov_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(2, 10))
+        self.funnel_list = ctk.CTkScrollableFrame(funnel, fg_color="transparent",
+                                                  height=110)
+        self.funnel_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(2, 10))
+        self.weeks_list = ctk.CTkScrollableFrame(weeks, fg_color="transparent",
+                                                 height=110)
+        self.weeks_list.grid(row=1, column=0, sticky="nsew", padx=8, pady=(2, 10))
 
         exports = Section(body, "Export datasets")
         exports.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
@@ -78,3 +89,28 @@ class ReportsView(ctk.CTkFrame):
                          text=f"{row['appointments']} appts · {row['completed']} done — "
                               f"{row['provider']}",
                          font=F_BODY, anchor="w").pack(fill="x", pady=2)
+
+        for w in self.funnel_list.winfo_children():
+            w.destroy()
+        funnel = self.app.reports.appointment_funnel(days=30)
+        for stage, count in funnel.items():
+            if not count:
+                continue
+            ctk.CTkLabel(self.funnel_list,
+                         text=f"{count}  {stage.replace('_', ' ')}",
+                         font=F_BODY, anchor="w").pack(fill="x", pady=2)
+        if not any(funnel.values()):
+            ctk.CTkLabel(self.funnel_list, text="Nothing in the last 30 days",
+                         font=F_SMALL, text_color=MUTED,
+                         anchor="w").pack(fill="x", pady=2)
+
+        for w in self.weeks_list.winfo_children():
+            w.destroy()
+        for row in self.app.reports.registrations_by_week(weeks=8)[-8:]:
+            ctk.CTkLabel(self.weeks_list,
+                         text=f"{row['count']} new — {row['day']}",
+                         font=F_BODY, anchor="w").pack(fill="x", pady=2)
+        if not self.app.reports.registrations_by_week(weeks=8):
+            ctk.CTkLabel(self.weeks_list, text="No registrations yet",
+                         font=F_SMALL, text_color=MUTED,
+                         anchor="w").pack(fill="x", pady=2)

@@ -191,6 +191,29 @@ class PatientsView(ctk.CTkFrame):
                          font=F_SMALL, anchor="w", wraplength=520,
                          justify="left").pack(fill="x", pady=1)
 
+        versions_box = ctk.CTkFrame(chart_scroll, fg_color="transparent")
+        versions_box.pack(fill="x", pady=(10, 6))
+        ctk.CTkLabel(versions_box, text="RECORD HISTORY — every change, who made it and when",
+                     font=("Segoe UI", 12, "bold"), text_color=MUTED,
+                     anchor="w").pack(fill="x")
+        try:
+            versions = self.app.patients.versions(patient_id)
+        except Exception:
+            versions = []
+        if not versions:
+            ctk.CTkLabel(versions_box, text="No changes recorded yet.",
+                         font=F_SMALL, text_color=MUTED,
+                         anchor="w").pack(fill="x", pady=2)
+        for v in versions[:30]:
+            who = f" by {v['actor']}" if v.get("actor") else ""
+            when = humanize(v["created_at"].isoformat()
+                            if not isinstance(v["created_at"], str) and v.get("created_at")
+                            else v.get("created_at"))
+            ctk.CTkLabel(versions_box,
+                         text=f"•  {when}{who} — {v['description']}",
+                         font=F_SMALL, anchor="w", wraplength=520,
+                         justify="left").pack(fill="x", pady=1)
+
     # ------------------------------------------------------------------ #
     # chart sections
 
