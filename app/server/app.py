@@ -941,6 +941,13 @@ def create_app(config: Config | None = None, db=None, repos=None,
         cfg = request.app.state.config
         c = cfg.cloud_backup
         svc, _ = _offsite(request)
+        remote = None
+        if svc.configured():
+            try:
+                names = svc.list_remote()
+                remote = {"objects": len(names)}
+            except OffsiteError:
+                remote = None
         return {
             "enabled": c.enabled,
             "provider": c.provider,
@@ -952,6 +959,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "keep_last_uploads": c.keep_last_uploads,
             "has_credentials": svc.credentials != ("", ""),
             "configured": svc.configured(),
+            "remote": remote,
             "last_upload_at": c.last_upload_at,
             "last_upload_status": c.last_upload_status,
         }
@@ -1117,6 +1125,22 @@ def create_app(config: Config | None = None, db=None, repos=None,
     def dashboard(user=Depends(current_user), reports=Depends(get_reports_service)):
         require(user, "reports.view")
         return reports.dashboard()
+
+    @app.get("/api/analytics", tags=["reports"])
+    def analytics(user=Depends(current_user), request: Request = None,
+                  reports=Depends(get_reports_service)):
+        """One call for dashboards: trends, outcomes, workload, storage."""
+        require(user, "reports.view")
+        payload = reports.analytics()
+        cfg = request.app.state.config
+        if cfg and cfg.cloud_backup and cfg.cloud_backup.last_upload_at:
+            payload["cloud_backup"] = {
+                "enabled": cfg.cloud_backup.enabled,
+                "provider": cfg.cloud_backup.provider,
+                "last_upload_at": cfg.cloud_backup.last_upload_at,
+                "last_upload_status": cfg.cloud_backup.last_upload_status,
+            }
+        return payload
 
     @app.get("/api/reports/{name}", tags=["reports"])
     def report(name: str, user=Depends(current_user),

@@ -121,6 +121,7 @@ $$(".nav-btn").forEach(btn =>
     if (btn.dataset.view === "directory") loadDirectory();
     if (btn.dataset.view === "appointments") loadAppointments();
     if (btn.dataset.view === "reports") loadReports();
+    if (btn.dataset.view === "analytics") loadAnalytics();
     if (btn.dataset.view === "settings") loadSettings();
     if (btn.dataset.view === "access") loadTempUsers();
     if (btn.dataset.view === "activity") loadActivity();
@@ -536,6 +537,45 @@ async function loadAppointments() {
 }
 
 $("#appt-provider")?.addEventListener("change", loadAppointments);
+
+/* ------------------------------------------------------------------ analytics */
+
+async function loadAnalytics() {
+  try {
+    const a = await api("/analytics");
+    $("#an-patients").textContent = a.patients_total ?? "–";
+    $("#an-today").textContent = a.appointments_today ?? "–";
+    $("#an-dx").textContent = a.active_diagnoses ?? "–";
+    $("#an-crit").textContent = a.critical_labs ?? "–";
+
+    fillTable($("#an-weeks"), a.registrations_by_week || [], [
+      ["day", "Day"],
+      ["count", "New patients"],
+    ]);
+    const f = a.appointment_funnel || {};
+    fillTable($("#an-funnel"), Object.entries(f).map(([k, v]) =>
+      ({ stage: k.replace(/_/g, " "), count: v })), [
+      ["stage", "Stage"],
+      ["count", "Appointments"],
+    ]);
+    fillTable($("#an-dx-list"), a.top_diagnoses || [], [
+      ["diagnosis", "Condition"],
+      ["count", "Patients"],
+    ]);
+    fillTable($("#an-work"), a.provider_workload || [], [
+      ["provider", "Provider"],
+      ["appointments", "Appointments"],
+      ["completed", "Completed"],
+    ]);
+    const cb = a.cloud_backup;
+    $("#an-storage").textContent = !cb
+      ? "Database lives on this computer; off-site copies are not switched on yet."
+      : `Off-site copies ${cb.enabled ? "are enabled" : "are configured but off"} ` +
+        `(${cb.provider}). Last upload ${cb.last_upload_status || "—"} at ${cb.last_upload_at || "—"}.`;
+  } catch (err) {
+    toast(err.message);
+  }
+}
 
 /* ------------------------------------------------------------------ activity */
 

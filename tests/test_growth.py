@@ -325,3 +325,20 @@ def test_provider_scoping_and_lists(client, auth):
 
     providers = client.get("/api/appointments/providers", headers=auth).json()
     assert set(providers) >= {"Dr. Bello", "Dr. Ade"}
+
+
+def test_analytics_endpoint(client, auth):
+    """One call powering the Analytics view: trends + outcomes + workload."""
+    pid = client.post("/api/patients", headers=auth,
+                      json={"name": "Analytics Patient",
+                            "diagnosis": "Hypertension"}).json()["patient_id"]
+    client.post(f"/api/appointments?patient_id={pid}", headers=auth,
+                json={"scheduled_at": "2026-09-20T09:00",
+                      "provider": "Dr. Bello"})
+    r = client.get("/api/analytics", headers=auth)
+    assert r.status_code == 200
+    a = r.json()
+    assert a["patients_total"] >= 1
+    assert isinstance(a["registrations_by_week"], list)
+    assert "completed" in a["appointment_funnel"]
+    assert any(d["diagnosis"] == "Hypertension" for d in a["top_diagnoses"])

@@ -100,6 +100,31 @@ class ReportsService:
         )
         return [dict(r) for r in rows]
 
+    def analytics(self) -> dict:
+        """The numbers behind the trends — for dashboards and data people.
+
+        Deliberately a single round trip of small aggregates: registrations
+        per week, appointment outcomes, the busiest conditions, the staff
+        who documented the most, and how much of the database is text that
+        SQL can answer. Deeper (statistical / model) work belongs in the
+        exported CSV/JSON datasets, not in the live path.
+        """
+        weeks = self.registrations_by_week(12)
+        funnel = self.appointment_funnel(30)
+        top_dx = self.top_diagnoses(10)
+        workload = self.workload_by_provider(30)
+        counts = self.repos["stats"].dashboard()
+        return {
+            "patients_total": counts.get("total_patients", 0),
+            "appointments_today": counts.get("appointments_today", 0),
+            "active_diagnoses": counts.get("active_diagnoses", 0),
+            "critical_labs": counts.get("critical_labs", 0),
+            "registrations_by_week": weeks,
+            "appointment_funnel": funnel,
+            "top_diagnoses": top_dx,
+            "provider_workload": workload,
+        }
+
     def dataset(self, name: str) -> dict:
         """A named report as {title, columns, rows} — export-ready."""
         if name == "patients":

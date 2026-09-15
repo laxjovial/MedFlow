@@ -40,6 +40,7 @@
       <button class="nav-btn" data-view="directory">🗂 Directory</button>
       <button class="nav-btn" data-view="appointments">🗓 Appointments</button>
       <button class="nav-btn" data-view="reports">📊 Reports</button>
+      <button class="nav-btn" data-view="analytics">📈 Analytics</button>
       <button class="nav-btn" data-view="access" id="nav-access">🗝 Access</button>
       <button class="nav-btn" data-view="settings" id="nav-settings">⚙ Settings</button>
       <button class="nav-btn" data-view="activity">⧗ Activity</button>
@@ -176,6 +177,41 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
             <button class="btn" data-export="audit" data-fmt="csv">Audit trail → CSV</button>
             <button class="btn" data-export="patients" data-fmt="json">Directory → JSON</button>
           </div>
+        </div>
+      </section>
+
+      <section id="view-analytics" class="view hidden">
+        <h2>Analytics</h2>
+        <p class="muted">Live numbers from your database — everything here can also be downloaded as CSV or JSON for spreadsheets and deeper analysis.</p>
+        <div class="stat-grid">
+          <div class="stat"><div class="stat-num" id="an-patients">–</div><div class="muted">Patients on file</div></div>
+          <div class="stat"><div class="stat-num" id="an-today">–</div><div class="muted">Appointments today</div></div>
+          <div class="stat"><div class="stat-num" id="an-dx">–</div><div class="muted">Active diagnoses</div></div>
+          <div class="stat"><div class="stat-num" id="an-crit">–</div><div class="muted">Critical labs</div></div>
+        </div>
+        <div class="two-col">
+          <div class="card">
+            <h3>New registrations, last 12 weeks</h3>
+            <table id="an-weeks" class="table"></table>
+          </div>
+          <div class="card">
+            <h3>Appointments, last 30 days</h3>
+            <table id="an-funnel" class="table"></table>
+          </div>
+        </div>
+        <div class="two-col">
+          <div class="card">
+            <h3>Most recorded conditions</h3>
+            <table id="an-dx-list" class="table"></table>
+          </div>
+          <div class="card">
+            <h3>Documentation workload, last 30 days</h3>
+            <table id="an-work" class="table"></table>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Storage</h3>
+          <p class="muted small" id="an-storage">—</p>
         </div>
       </section>
 
