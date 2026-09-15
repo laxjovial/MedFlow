@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date
 
 from app.errors import (AuthorizationError, DuplicatePatientError,
-                        NotFoundError, ValidationError)
+                        MedFlowError, NotFoundError, ValidationError)
 from app.models import (
     AuditEvent,
     Patient,
@@ -155,6 +155,45 @@ class PatientService:
             return [s.to_row() for s in rows if s.patient_id in allowed]
         return [s.to_row() for s in
                 self.repos["patients"].by_department(department_id, limit)]
+
+    # ------------------------------------------------------------------ #
+    # bulk import
+
+    def import_rows(self, rows: list[dict], skip_invalid: bool = True) -> dict:
+        """Register many patients from a CSV/paste payload.
+
+        Accepts the same fields as the patient form (name required, most
+        others optional, ``department`` may be a name or id). Returns a
+        structured report so the caller can show exactly which rows made
+        it and which need attention — no silent partial imports.
+        """
+        if len(rows) > 2000:
+            raise ValidationError({"rows": ["Import at most 2000 rows at a time."]})
+        created, failed = 0, []
+        for index, row in enumerate(rows, start=1):
+            payload = {k: (v or "").strip() for k, v in row.items()
+                       if isinstance(v, str)}
+            payload.update({k: v for k, v in row.items()
+                            if k not in payload or payload[k] == ""})
+            if not payload.get("name"):
+                failed.append({"row": index, "name": "",
+                               "error": "A name is required on every row."})
+                if not skip_invalid:
+                    raise ValidationError({"rows": [failed[-1]["error"]]})
+                continue
+            try:
+                patient = self.register(payload)
+                created += 1
+            except MedFlowError as exc:
+                message = str(getattr(exc, "errors", None) or exc)
+                failed.append({"row": index,
+                               "name": payload.get("name", ""),
+                               "error": message})
+                if not skip_invalid:
+                    raise
+        self._audit("imported", "patient", None,
+                    f"Bulk import: {created} created, {len(failed)} failed")
+        return {"created": created, "failed": failed, "total": len(rows)}
 
     # ------------------------------------------------------------------ #
     # mutations

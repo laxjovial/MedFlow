@@ -288,3 +288,21 @@ def test_department_roster_is_scoped(client, auth):
         headers=auth).json()
     assert all(row["patient_number"] for row in roster)
     assert any(row["name"] == "Roster Check" for row in roster)
+
+
+def test_bulk_import_reports_rows(client, auth):
+    """Spreadsheet import: valid rows land, bad rows come back explained."""
+    r = client.post("/api/patients/import", headers=auth, json={"rows": [
+        {"name": "Bulk One", "age": "30", "sex": "female"},
+        {"name": "Bulk Two", "phone": "+2348000000000"},
+        {"age": "55"},                      # missing name -> reported
+    ]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["created"] == 2
+    assert body["total"] == 3
+    assert len(body["failed"]) == 1
+    assert "name" in body["failed"][0]["error"].lower()
+
+    found = client.get("/api/patients?q=Bulk", headers=auth).json()
+    assert len(found) == 2

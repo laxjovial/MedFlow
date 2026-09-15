@@ -289,6 +289,46 @@ async function loadPatients(query = "") {
   }
 }
 
+/* ---------------------------------------------------------- bulk import */
+
+$("#btn-import").addEventListener("click", () => {
+  $("#import-panel").classList.toggle("hidden");
+});
+$("#btn-import-cancel").addEventListener("click", () => {
+  $("#import-panel").classList.add("hidden");
+  $("#import-report").classList.add("hidden");
+});
+
+$("#btn-import-run").addEventListener("click", async () => {
+  const text = $("#import-text").value.trim();
+  if (!text) return toast("Paste some rows first");
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  const headers = lines[0].split(/[,;\t]/).map(h => h.trim().toLowerCase());
+  const rows = lines.slice(1).map(line => {
+    const cells = line.split(/[,;\t]/).map(c => c.trim());
+    const row = {};
+    headers.forEach((h, i) => { if (h) row[h] = cells[i] ?? ""; });
+    return row;
+  }).filter(r => Object.values(r).some(v => v));
+  if (!rows.length) return toast("No data rows found under the header");
+  try {
+    const report = await api("/patients/import", {
+      method: "POST", body: JSON.stringify({ rows }),
+    });
+    const rep = $("#import-report");
+    rep.classList.remove("hidden");
+    rep.innerHTML =
+      `<p class="ok">Imported ${report.created} of ${report.total} record(s).</p>` +
+      (report.failed.length
+        ? `<p class="warn-text">${report.failed.length} row(s) need attention:</p><ul class="plain-list">` +
+          report.failed.map(f =>
+            `<li>Row ${f.row}${f.name ? ` (${esc(f.name)})` : ""}: ${esc(f.error)}</li>`).join("") +
+          "</ul>"
+        : "");
+    loadPatients();
+  } catch (err) { toast(err.message); }
+});
+
 /* --------------------------------------------------------------- directory */
 
 async function loadDirectory() {

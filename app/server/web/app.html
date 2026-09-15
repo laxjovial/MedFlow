@@ -67,9 +67,24 @@
       <section id="view-patients" class="view hidden">
         <div class="row-between">
           <h2>Patients</h2>
-          <button id="btn-new-patient" class="btn primary">＋ New patient</button>
+          <div class="chip-row">
+            <button id="btn-import" class="btn">⤓ Import from a spreadsheet</button>
+            <button id="btn-new-patient" class="btn primary">＋ New patient</button>
+          </div>
         </div>
         <input id="patient-search" class="search" style="width:100%;padding:11px 14px;margin-bottom:14px;border-radius:10px;border:1px solid var(--line)" placeholder="Search by name, number, phone or diagnosis…">
+        <div id="import-panel" class="card hidden">
+          <h3>Bring in records from a spreadsheet</h3>
+          <p class="muted small">Copy the columns from Excel or Google Sheets <em>including the header row</em> and paste below. The first column must be <strong>name</strong>; anything you leave out stays blank. Worked example:</p>
+          <div class="code" style="white-space:pre-wrap">name,phone,age,sex,diagnosis,department
+Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
+          <textarea id="import-text" rows="6" style="width:100%;margin-top:10px;padding:10px;border-radius:9px;border:1px solid var(--line);font-family:inherit" placeholder="Paste rows here…"></textarea>
+          <div class="chip-row" style="margin-top:8px">
+            <button id="btn-import-run" class="btn primary">Import these rows</button>
+            <button id="btn-import-cancel" class="btn ghost">Cancel</button>
+          </div>
+          <div id="import-report" class="hidden" style="margin-top:10px"></div>
+        </div>
         <table id="patients-table" class="table"></table>
       </section>
 

@@ -232,6 +232,13 @@ class UserCreate(BaseModel):
     unit_id: int | None = None
 
 
+class ImportRows(BaseModel):
+    """Bulk patient import: rows of the same fields as the patient form."""
+
+    rows: list[dict[str, str]]
+    skip_invalid: bool = True
+
+
 class UserPatch(BaseModel):
     active: bool | None = None
     role: str | None = None
@@ -608,6 +615,13 @@ def create_app(config: Config | None = None, db=None, repos=None,
         require(user, "patients.create")
         patient = patients.register(body.model_dump())
         return patient.to_row()
+
+    @app.post("/api/patients/import", tags=["patients"])
+    def import_patients(body: ImportRows, user=Depends(current_user),
+                        patients=Depends(get_patient_service)):
+        """Bring in a batch of records (spreadsheet paste / CSV rows)."""
+        require(user, "patients.create")
+        return patients.import_rows(body.rows, body.skip_invalid)
 
     @app.get("/api/patients/deleted", tags=["patients"])
     def deleted_patients(user=Depends(current_user),
