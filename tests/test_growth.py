@@ -332,6 +332,8 @@ def test_analytics_endpoint(client, auth):
     pid = client.post("/api/patients", headers=auth,
                       json={"name": "Analytics Patient",
                             "diagnosis": "Hypertension"}).json()["patient_id"]
+    client.post(f"/api/patients/{pid}/diagnoses", headers=auth,
+                json={"description": "Hypertension"})
     client.post(f"/api/appointments?patient_id={pid}", headers=auth,
                 json={"scheduled_at": "2026-09-20T09:00",
                       "provider": "Dr. Bello"})
