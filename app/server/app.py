@@ -673,6 +673,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
         if field:
             return patients.field_changes(patient_id, field)
         return patients.versions(patient_id)
+
+    @app.get("/api/patients/{patient_id}/chart", tags=["patients"])
     def patient_chart(
         patient_id: int,
         user=Depends(current_user),

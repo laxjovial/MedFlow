@@ -42,7 +42,6 @@ class AuditEvent:
 
 
 @serializable("created_at")
-@serializable("created_at")
 @dataclass
 class PatientHistoryEvent:
     """Clinical timeline entry attached to one patient."""
