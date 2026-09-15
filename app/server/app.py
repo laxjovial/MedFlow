@@ -574,6 +574,31 @@ def create_app(config: Config | None = None, db=None, repos=None,
         require(user, "patients.view")
         return [s.to_row() for s in patients.search(q, limit)]
 
+    @app.get("/api/patients/by-diagnosis", tags=["patients"])
+    def patients_by_diagnosis(q: str = "", limit: int = 200,
+                              user=Depends(current_user),
+                              patients=Depends(get_patient_service)):
+        """Directory view: everyone whose active problem list matches."""
+        require(user, "patients.view")
+        return [r for r in patients.by_diagnosis(q, limit)]
+
+    @app.get("/api/patients/by-department", tags=["patients"])
+    def patients_by_department(department_id: int | None = None,
+                               limit: int = 500,
+                               user=Depends(current_user),
+                               patients=Depends(get_patient_service)):
+        """Roster view: one department's patients, or the whole facility."""
+        require(user, "patients.view")
+        return patients.by_department(department_id, limit)
+
+    @app.get("/api/diagnoses", tags=["records"])
+    def diagnoses_directory(q: str = "", limit: int = 200,
+                            user=Depends(current_user),
+                            records=Depends(get_records_service)):
+        """Distinct conditions across the facility, with patient counts."""
+        require(user, "records.view")
+        return records.diagnoses_directory(q, limit)
+
     @app.post("/api/patients", status_code=201, tags=["patients"])
     def create_patient(
         body: PatientCreate,
@@ -634,7 +659,20 @@ def create_app(config: Config | None = None, db=None, repos=None,
         require(user, "patients.delete")
         return {"ok": patients.restore(patient_id)}
 
-    @app.get("/api/patients/{patient_id}/chart", tags=["patients"])
+    # -------------------------------------------------- versions & progression
+
+    @app.get("/api/patients/{patient_id}/versions", tags=["patients"])
+    def patient_versions(
+        patient_id: int,
+        field: str | None = None,
+        user=Depends(current_user),
+        patients=Depends(get_patient_service),
+    ):
+        """The record's story: who updated it, what changed, and when."""
+        require(user, "patients.view")
+        if field:
+            return patients.field_changes(patient_id, field)
+        return patients.versions(patient_id)
     def patient_chart(
         patient_id: int,
         user=Depends(current_user),

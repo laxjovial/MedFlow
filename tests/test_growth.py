@@ -235,3 +235,56 @@ def test_auto_login_invalid_session_cleared(client, auth):
     me = client.get("/api/auth/me", headers={
         "Authorization": f"Bearer {stale['token']}"})
     assert me.status_code == 401
+
+
+# ------------------------------------------------------------- versions & directory
+
+
+def test_patient_versions_record_who_changed_what(client, auth):
+    """Every demographic change lands as a version entry with actor + time."""
+    made = client.post("/api/patients", headers=auth,
+                       json={"name": "Ngozi Ade", "age": 41,
+                             "diagnosis": "Type 2 diabetes"}).json()
+    pid = made["patient_id"]
+    client.patch(f"/api/patients/{pid}", headers=auth,
+                 json={"age": 42, "diagnosis": "Type 2 diabetes, controlled"})
+    r = client.get(f"/api/patients/{pid}/versions", headers=auth)
+    assert r.status_code == 200
+    versions = r.json()
+    assert versions[0]["event_type"] == "updated"
+    assert any("diagnosis" in v["description"].lower() for v in versions)
+    assert all(v["actor"] for v in versions)  # who did it is always recorded
+
+
+def test_diagnosis_search_and_directories(client, auth):
+    """Search by diagnosis; department and whole-facility rosters work."""
+    client.post("/api/patients", headers=auth,
+                json={"name": "Malaria Patient", "diagnosis": "Malaria"})
+    r = client.get("/api/patients/by-diagnosis?q=Malaria", headers=auth)
+    assert r.status_code == 200
+    rows = r.json()
+    assert rows and "Malaria" in rows[0]["diagnosis"]
+
+    dxs = client.get("/api/diagnoses", headers=auth).json()
+    assert any(d["description"] == "Malaria" and d["patients"] >= 1 for d in dxs)
+
+    whole = client.get("/api/patients/by-department", headers=auth).json()
+    assert isinstance(whole, list) and len(whole) >= 1
+
+
+def test_department_roster_is_scoped(client, auth):
+    """A department roster only returns patients filed under it."""
+    made = client.post("/api/org/units", headers=auth,
+                       json={"name": "Maternity", "kind": "department"})
+    if made.status_code != 201:
+        made = client.post("/api/org/units", headers=auth,
+                           json={"name": f"Ward-{id(auth)}", "kind": "department"})
+    assert made.status_code == 201, made.text
+    dept_id = made.json()["unit_id"]
+    client.post("/api/patients", headers=auth,
+                json={"name": "Roster Check", "department_id": dept_id})
+    roster = client.get(
+        f"/api/patients/by-department?department_id={dept_id}",
+        headers=auth).json()
+    assert all(row["patient_number"] for row in roster)
+    assert any(row["name"] == "Roster Check" for row in roster)

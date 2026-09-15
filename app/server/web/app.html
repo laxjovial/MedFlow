@@ -37,6 +37,7 @@
       <button class="side-toggle" id="side-collapse">◀ Hide menu</button>
       <button class="nav-btn active" data-view="dashboard">◧ Dashboard</button>
       <button class="nav-btn" data-view="patients">👥 Patients</button>
+      <button class="nav-btn" data-view="directory">🗂 Directory</button>
       <button class="nav-btn" data-view="appointments">🗓 Appointments</button>
       <button class="nav-btn" data-view="reports">📊 Reports</button>
       <button class="nav-btn" data-view="access" id="nav-access">🗝 Access</button>
@@ -70,6 +71,30 @@
         </div>
         <input id="patient-search" class="search" style="width:100%;padding:11px 14px;margin-bottom:14px;border-radius:10px;border:1px solid var(--line)" placeholder="Search by name, number, phone or diagnosis…">
         <table id="patients-table" class="table"></table>
+      </section>
+
+      <section id="view-directory" class="view hidden">
+        <h2>Directory</h2>
+        <p class="muted">Browse by department or by condition — the same records, grouped the way you think about them.</p>
+        <div class="two-col">
+          <div class="card">
+            <h3>By department</h3>
+            <p class="muted small">Pick a department to see its patients, or “Whole facility” for everyone.</p>
+            <div class="chip-row">
+              <select id="dir-dept" style="min-width:200px"></select>
+            </div>
+            <table id="dir-dept-table" class="table"></table>
+          </div>
+          <div class="card">
+            <h3>By condition (diagnosis)</h3>
+            <input id="dir-dx-search" class="search" style="width:100%;padding:9px 12px;margin-bottom:8px;border-radius:9px;border:1px solid var(--line)" placeholder="Filter conditions…">
+            <table id="dir-dx-table" class="table"></table>
+          </div>
+        </div>
+        <div class="card" id="dir-dx-card">
+          <h3 id="dir-dx-title">Patients</h3>
+          <table id="dir-dx-patients" class="table"></table>
+        </div>
       </section>
 
       <section id="view-appointments" class="view hidden">
@@ -324,6 +349,10 @@
             </div>
             <div class="card">
               <h3>Timeline</h3><ul id="chart-timeline" class="list"></ul>
+            </div>
+            <div class="card">
+              <h3>Record history <span class="hint-inline">— every change, who made it and when</span></h3>
+              <table id="chart-versions" class="table"></table>
             </div>
           </div>
         </div>

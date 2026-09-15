@@ -118,6 +118,7 @@ $$(".nav-btn").forEach(btn =>
     showView(btn.dataset.view);
     if (btn.dataset.view === "dashboard") loadDashboard();
     if (btn.dataset.view === "patients") loadPatients();
+    if (btn.dataset.view === "directory") loadDirectory();
     if (btn.dataset.view === "appointments") loadAppointments();
     if (btn.dataset.view === "reports") loadReports();
     if (btn.dataset.view === "settings") loadSettings();
@@ -288,6 +289,79 @@ async function loadPatients(query = "") {
   }
 }
 
+/* --------------------------------------------------------------- directory */
+
+async function loadDirectory() {
+  const perms = new Set(state.user.permissions || []);
+  if (!perms.has("patients.view")) return;
+  try {
+    /* department roster */
+    const sel = $("#dir-dept");
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Whole facility</option>' +
+      deptCache.map(d => d.kind === "organization"
+        ? "" : `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+    if ([...sel.options].some(o => o.value === current)) sel.value = current;
+    const roster = await api(
+      `/patients/by-department${sel.value ? `?department_id=${sel.value}` : ""}`);
+    fillTable($("#dir-dept-table"), roster, [
+      ["patient_number", "No"],
+      ["name", "Name"],
+      ["diagnosis", "Diagnosis"],
+    ], { onRowClick: s => openChart(s.patient_id) });
+
+    /* condition directory */
+    const dxs = await api("/diagnoses");
+    fillTable($("#dir-dx-table"), dxs, [
+      ["description", "Condition"],
+      ["patients", "Patients"],
+      [null, "", () => ""],
+    ]);
+    $$("#dir-dx-table tbody tr").forEach((tr, i) => {
+      if (!dxs[i] || tr.querySelector("td[colspan]")) return;
+      tr.style.cursor = "pointer";
+      tr.addEventListener("click", () => showDxPatients(dxs[i].description));
+    });
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function showDxPatients(description) {
+  $("#dir-dx-title").textContent = `Patients with “${description}”`;
+  try {
+    const rows = await api(`/patients/by-diagnosis?q=${encodeURIComponent(description)}`);
+    fillTable($("#dir-dx-patients"), rows, [
+      ["patient_number", "No"],
+      ["name", "Name"],
+      ["age", "Age"],
+      ["diagnosis", "Diagnosis"],
+      ["updated_at", "Updated"],
+    ], { datetime: ["updated_at"], onRowClick: s => openChart(s.patient_id) });
+    $("#dir-dx-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+$("#dir-dept").addEventListener("change", loadDirectory);
+$("#dir-dx-search").addEventListener("input", debounce(async () => {
+  try {
+    const q = $("#dir-dx-search").value;
+    const dxs = await api(`/diagnoses?q=${encodeURIComponent(q)}`);
+    fillTable($("#dir-dx-table"), dxs, [
+      ["description", "Condition"],
+      ["patients", "Patients"],
+      [null, "", () => ""],
+    ]);
+    $$("#dir-dx-table tbody tr").forEach((tr, i) => {
+      if (!dxs[i] || tr.querySelector("td[colspan]")) return;
+      tr.style.cursor = "pointer";
+      tr.addEventListener("click", () => showDxPatients(dxs[i].description));
+    });
+  } catch (err) { toast(err.message); }
+}, 250));
+
 /* ------------------------------------------------------------------ chart */
 
 async function openChart(patientId) {
@@ -320,6 +394,16 @@ async function openChart(patientId) {
       n => `${fmtDT(n.created_at)} <em>(${esc(n.category)})</em> — ${esc(n.body)}`);
     renderList("#chart-timeline", chart.timeline,
       t => `${fmtDT(t.created_at)} — ${esc(t.description)}`);
+
+    /* record history: who changed what, when */
+    try {
+      const versions = await api(`/patients/${patientId}/versions`);
+      fillTable($("#chart-versions"), versions.slice(0, 40), [
+        ["created_at", "When", r => fmtDT(r.created_at)],
+        ["description", "Change"],
+        ["actor", "By", r => esc(r.actor || "system")],
+      ]);
+    } catch { fillTable($("#chart-versions"), [], [["", ""]]); }
 
     $("#chart-print").href = `/api/patients/${patientId}/chart.html`;
   } catch (err) {
@@ -860,6 +944,14 @@ $("#temp-form").addEventListener("submit", async e => {
 });
 
 /* ------------------------------------------------------------------ helpers */
+
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
 
 function deptName(id) {
   const d = deptCache.find(x => x.id === id);

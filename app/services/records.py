@@ -283,6 +283,34 @@ class RecordsService:
                       f"Appointment marked {status.replace('_', ' ')}.")
         return appt
 
+    def diagnoses_directory(self, query: str = "", limit: int = 200) -> list[dict]:
+        """Distinct conditions across the facility, newest patient first.
+
+        Aggregated from both the structured problem list and the free-text
+        baseline diagnosis, so nothing documented is invisible.
+        """
+        like = f"%{(query or '').strip()}%"
+        rows = self.repos["patients"].db.execute(
+            """
+            SELECT description, COUNT(*) AS patients,
+                   MAX(diagnosed_at) AS last_seen
+            FROM (
+                SELECT TRIM(description) AS description, diagnosed_at
+                FROM diagnoses
+                UNION ALL
+                SELECT TRIM(diagnosis) AS description, NULL AS diagnosed_at
+                FROM patients
+                WHERE deleted = 0 AND COALESCE(diagnosis, '') != ''
+            )
+            WHERE description != '' AND description LIKE ?
+            GROUP BY LOWER(description)
+            ORDER BY patients DESC, LOWER(description)
+            LIMIT ?
+            """,
+            (like, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def upcoming_appointments(self, limit: int = 50) -> list[dict]:
         return self.repos["appointments"].upcoming(limit)
 

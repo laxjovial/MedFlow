@@ -112,6 +112,51 @@ class PatientService:
         return chart
 
     # ------------------------------------------------------------------ #
+    # versions & progression
+
+    def versions(self, patient_id: int, limit: int = 200) -> list[dict]:
+        """Who changed what, when — the record's own story, newest first."""
+        self.get(patient_id)  # scope + existence check
+        return [e.to_row() for e in
+                self.repos["audit"].history_for_patient(patient_id, limit)]
+
+    def field_changes(self, patient_id: int, field: str | None = None,
+                      limit: int = 200) -> list[dict]:
+        """Timeline entries about one field (e.g. 'diagnosis'), newest first."""
+        self.get(patient_id)
+        events = [e.to_row() for e in
+                  self.repos["audit"].history_for_patient(patient_id)]
+        events = [e for e in events if e.get("event_type") == "updated"]
+        if field:
+            needle = field.replace("_", " ").lower()
+            events = [e for e in events
+                      if needle in str(e.get("description", "")).lower()]
+        return events[:limit]
+
+    # ------------------------------------------------------------------ #
+    # directory views
+
+    def by_diagnosis(self, query: str = "", limit: int = 200) -> list[dict]:
+        """Everyone with a matching diagnosis — the condition directory."""
+        scope = self._scope_ids()
+        rows = self.repos["patients"].by_diagnosis(query, limit)
+        if scope is None:
+            return [s.to_row() for s in rows]
+        allowed = set(scope)
+        return [s.to_row() for s in rows if s.patient_id in allowed]
+
+    def by_department(self, department_id: int | None = None,
+                      limit: int = 500) -> list[dict]:
+        """One department's roster, or the entire facility when no id given."""
+        scope = self._scope_ids()
+        if scope is not None:
+            rows = self.repos["patients"].by_department(department_id, limit)
+            allowed = set(scope)
+            return [s.to_row() for s in rows if s.patient_id in allowed]
+        return [s.to_row() for s in
+                self.repos["patients"].by_department(department_id, limit)]
+
+    # ------------------------------------------------------------------ #
     # mutations
 
     # ------------------------------------------------------------------ #
@@ -231,7 +276,19 @@ class PatientService:
 
         patient = self.repos["patients"].update(patient, changed_fields)
         summary = ", ".join(changed_fields) or "no fields"
-        self._history(patient_id, EVENT_UPDATED, f"Updated: {summary}.")
+
+        # Version history: one human-readable line per changed field.
+        from app.utils.dates import humanize
+        for field in (changed_fields or []):
+            if field == "origin_unit_id":
+                new = self.repos["units"].get(department_id)
+                detail = f"Department set to {new.name}." if new else "Department cleared."
+            else:
+                label = field.replace("_", " ").capitalize()
+                new_val = getattr(patient, field, None)
+                detail = f"{label}: {new_val if new_val not in (None, '') else 'cleared'}."
+            self._history(patient_id, EVENT_UPDATED, detail)
+
         self._audit(EVENT_UPDATED, "patient", patient.patient_number, summary)
         return patient
 

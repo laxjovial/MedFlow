@@ -116,6 +116,33 @@ class PatientRepository(_Repository):
         return [s for s in summaries
                 if query in f"{s.patient_number} {s.name} {s.diagnosis or ''}".lower()]
 
+    def by_diagnosis(self, query: str = "", limit: int = 200) -> list[PatientSummary]:
+        """Everyone whose recorded diagnosis matches, for directory views."""
+        query = (query or "").strip()
+        sql = ("SELECT patient_id, patient_number, name, age, diagnosis, "
+               "updated_at, version FROM patients WHERE deleted = 0 "
+               "AND COALESCE(diagnosis, '') != ''")
+        params: list[Any] = []
+        if query:
+            sql += " AND diagnosis LIKE ?"
+            params.append(f"%{query}%")
+        sql += " ORDER BY diagnosis COLLATE NOCASE, name COLLATE NOCASE LIMIT ?"
+        params.append(limit)
+        return [PatientSummary.from_row(r) for r in self._query_all(sql, params)]
+
+    def by_department(self, unit_id: int | None = None,
+                      limit: int = 500) -> list[PatientSummary]:
+        """A department's roster, or the whole facility when unit is None."""
+        sql = ("SELECT patient_id, patient_number, name, age, diagnosis, "
+               "updated_at, version FROM patients WHERE deleted = 0")
+        params: list[Any] = []
+        if unit_id is not None:
+            sql += " AND origin_unit_id = ?"
+            params.append(unit_id)
+        sql += " ORDER BY name COLLATE NOCASE LIMIT ?"
+        params.append(limit)
+        return [PatientSummary.from_row(r) for r in self._query_all(sql, params)]
+
     def deleted_summaries(self) -> list[PatientSummary]:
         """Soft-deleted patients, most recently active first (recycle bin)."""
         rows = self._query_all(
