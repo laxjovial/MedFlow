@@ -369,6 +369,32 @@ def test_staff_accounts_carry_details(client, auth):
     assert up.json()["phone"] == "+2348020001111"  # untouched fields survive
 
 
+# ------------------------------------------------------------- web integrity ---
+
+class TestWebAssets:
+    """The built-in web client must always parse — one bad token in a
+    JS file silently bricks the whole workspace (boot never runs, the
+    sign-in gate never hides)."""
+
+    def test_every_web_script_parses(self):
+        import shutil
+        import subprocess
+        from pathlib import Path
+
+        node = shutil.which("node")
+        if not node:                      # node unavailable — nothing to do
+            pytest.skip("node not installed")
+        web = Path(__file__).resolve().parents[1] / "app" / "server" / "web"
+        scripts = sorted(web.glob("*.js"))
+        assert scripts, "web scripts missing"
+        for script in scripts:
+            result = subprocess.run(
+                [node, "--check", str(script)],
+                capture_output=True, text=True)
+            assert result.returncode == 0, (
+                f"{script.name} does not parse: {result.stderr.strip()}")
+
+
 # --------------------------------------------------------- record template ---
 
 class TestRecordTemplate:

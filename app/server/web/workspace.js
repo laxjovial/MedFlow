@@ -855,7 +855,10 @@ async function loadSessionPolicy() {
     if (btn) btn.classList.toggle("hidden", s.logouts_enabled === false);
     const kind = s.sliding_refresh ? "renews while in use" : "fixed length";
     $("#session-status").textContent =
-      `Now: ${s.token_ttl_hours}-hour sign-ins${s.remember_me_days ? `, “stay signed in” keeps people in for up to ${s.remember_me_days} day(s)` : "”}, sessions ${kind}.`;
+      `Now: ${s.token_ttl_hours}-hour sign-ins` +
+      (s.remember_me_days
+        ? `, “stay signed in” keeps people in for up to ${s.remember_me_days} day(s), sessions ${kind}.`
+        : `, sessions ${kind}.`);
     const perms = new Set(state.user.permissions || []);
     [...form.querySelectorAll("input,select,button")].forEach(
       el => (el.disabled = !perms.has("users.manage")));
