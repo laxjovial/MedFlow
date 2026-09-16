@@ -181,6 +181,76 @@ class PatientsView(ctk.CTkFrame):
                                                f"({n.category}) — {n.body}",
                             rows=chart["notes"])
 
+        # ------------------------------------------------- facility's own fields
+        try:
+            tpl_entries = self.app.templates.patient_entries(patient_id)
+        except Exception:
+            tpl_entries = []
+        tpl_sections: dict[str, list] = {}
+        for entry in tpl_entries:
+            tpl_sections.setdefault(entry.section, []).append(entry)
+        if tpl_sections:
+            tpl_box = Section(chart_scroll, "Custom fields")
+            tpl_box.pack(fill="x", pady=(8, 0))
+            tpl_grid = ctk.CTkFrame(tpl_box, fg_color="transparent")
+            tpl_grid.grid(row=1, column=0, sticky="ew", padx=12, pady=(4, 10))
+            widgets: dict[int, ctk.CTkBaseClass] = {}
+            row_num = 0
+            can_edit = "records.edit" in self.app.permissions
+            for section_name, entries in tpl_sections.items():
+                ctk.CTkLabel(tpl_grid, text=section_name.upper(),
+                             font=("Segoe UI", 11, "bold"),
+                             text_color=MUTED, anchor="w").grid(
+                    row=row_num, column=0, columnspan=2, sticky="w", pady=(8, 1))
+                row_num += 1
+                for e in entries:
+                    ctk.CTkLabel(tpl_grid, text=e.label + (f" ({e.unit})"
+                                                        if e.unit else ""),
+                                 font=F_SMALL, anchor="w").grid(
+                        row=row_num, column=0, sticky="w", padx=(0, 8),
+                        pady=1)
+                    if not can_edit:
+                        ctk.CTkLabel(tpl_grid, text=e.value_text or "—",
+                                     font=F_BODY, anchor="w").grid(
+                            row=row_num, column=1, sticky="w", pady=1)
+                    elif e.value_type == "choice" and e.choices:
+                        menu = ctk.CTkOptionMenu(
+                            tpl_grid, width=180, height=30, font=F_SMALL,
+                            fg_color="#EDF3F9", button_color="#DFE7F0",
+                            button_hover_color="#CBD8E4", text_color="#16283C",
+                            values=["—"] + [c.strip() for c in
+                                             e.choices.split(",") if c.strip()])
+                        menu.set(e.value_text or "—")
+                        menu.grid(row=row_num, column=1, sticky="w", pady=1)
+                        widgets[e.template_id] = menu
+                    else:
+                        entry = ctk.CTkEntry(tpl_grid, width=180, height=30,
+                                             font=F_SMALL,
+                                             placeholder_text="Not filled in yet")
+                        if e.value_text:
+                            entry.insert(0, e.value_text)
+                        entry.grid(row=row_num, column=1, sticky="w", pady=1)
+                        widgets[e.template_id] = entry
+                    row_num += 1
+            if can_edit and widgets:
+                def save_template_values():
+                    values = {}
+                    for tid, w in widgets.items():
+                        text = w.get().strip() if hasattr(w, "get") else None
+                        values[tid] = None if text in ("", "—", None) else text
+                    try:
+                        self.app.templates.set_patient_values(
+                            self.current_id, values)
+                        self.app.toast("Custom fields saved", "ok")
+                        self.open_chart(self.current_id)
+                    except Exception as exc:
+                        self.app.toast(str(exc), "error")
+                ctk.CTkButton(tpl_grid, text="Save custom fields",
+                              font=F_BOLD, height=32,
+                              command=save_template_values).grid(
+                    row=row_num, column=0, columnspan=2, sticky="w",
+                    pady=(10, 2))
+
         timeline = ctk.CTkFrame(chart_scroll, fg_color="transparent")
         timeline.pack(fill="x", pady=(10, 6))
         ctk.CTkLabel(timeline, text="CLINICAL TIMELINE", font=("Segoe UI", 12, "bold"),

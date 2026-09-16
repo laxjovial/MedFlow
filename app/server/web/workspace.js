@@ -90,6 +90,7 @@ function enterApp() {
   const temporary = !!state.user.temporary;
   $("#btn-new-patient").classList.toggle("hidden", !perms.has("patients.create"));
   loadDepartments();
+  loadTemplateFields();
   $("#btn-delete-patient").classList.toggle("hidden", !perms.has("patients.delete"));
   $("#btn-new-appt").classList.toggle("hidden", !perms.has("appointments.manage"));
   $("#nav-access").classList.toggle("hidden", !perms.has("users.manage"));
@@ -258,6 +259,162 @@ $("#btn-dept-new")?.addEventListener("click", async () => {
     });
     toast(`Department "${name.trim()}" created`, "ok");
     loadDepartments();
+  } catch (err) { toast(err.message); }
+});
+
+/* ------------------------------------------------------- record template */
+
+let templateCache = [];
+
+async function loadTemplateFields() {
+  try {
+    templateCache = await api("/template/fields?all=true");
+    const table = $("#template-table");
+    if (table) {
+      const perms = new Set(state.user.permissions || []);
+      fillTable(table, templateCache, [
+        ["label", "Field"],
+        ["section", "Section"],
+        ["value_type", "Answers"],
+        [null, "", () => ""],
+      ]);
+      if (perms.has("settings.manage")) {
+        $$("#template-table tbody tr").forEach((tr, i) => {
+          const cell = tr.lastElementChild;
+          const field = templateCache[i];
+          if (!field || tr.querySelector("td[colspan]")) return;
+          cell.innerHTML = "";
+          const rename = document.createElement("button");
+          rename.className = "btn ghost small";
+          rename.textContent = "Edit";
+          rename.addEventListener("click", () => editTemplateField(field));
+          const del = document.createElement("button");
+          del.className = "btn danger small";
+          del.textContent = "Remove";
+          if (!field.active) del.disabled = true;
+          del.title = "Takes the field off the chart; saved values are kept";
+          del.addEventListener("click", async () => {
+            if (!confirm(`Remove "${field.label}" from the chart? Nothing already saved is deleted.`)) return;
+            try {
+              await api(`/template/fields/${field.template_id}`, { method: "DELETE" });
+              toast(`"${field.label}" removed from the chart`, "ok");
+              loadTemplateFields();
+            } catch (err) { toast(err.message); }
+          });
+          cell.append(rename, del);
+        });
+      }
+      templateCache.forEach((f, i) => {
+        const tr = table.querySelectorAll("tbody tr")[i];
+        if (tr && !f.active) tr.style.opacity = "0.55";
+      });
+    }
+  } catch (err) { toast(err.message); }
+}
+
+function editTemplateField(field) {
+  const label = prompt("Field name:", field.label);
+  if (label === null) return;
+  const section = prompt("Section (grouping on the chart):", field.section || "General");
+  if (section === null) return;
+  let choices = field.choices || "";
+  if (field.value_type === "choice") {
+    const next = prompt("List options, comma-separated:", choices);
+    if (next === null) return;
+    choices = next;
+  }
+  const body = { label: label.trim(), section: section.trim() || "General" };
+  if (field.value_type === "choice") body.choices = choices.trim();
+  api(`/template/fields/${field.template_id}`, {
+    method: "PATCH", body: JSON.stringify(body),
+  }).then(() => { toast("Field updated", "ok"); loadTemplateFields(); })
+    .catch(err => toast(err.message));
+}
+
+$("#template-form")?.addEventListener("submit", async e => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  try {
+    await api("/template/fields", { method: "POST", body: JSON.stringify(data) });
+    toast(`Field "${data.label}" added`, "ok");
+    e.target.reset();
+    loadTemplateFields();
+  } catch (err) { toast(err.message); }
+});
+
+function renderChartTemplate(sections) {
+  const host = $("#chart-template");
+  if (!host) return;
+  const perms = new Set(state.user.permissions || []);
+  const canEdit = perms.has("records.edit");
+  host.innerHTML = "";
+  const names = Object.keys(sections || {});
+  if (!names.length) {
+    host.innerHTML = '<p class="muted small">No custom fields yet — add some in Settings → Record template.</p>';
+    return;
+  }
+  for (const section of names) {
+    const head = document.createElement("p");
+    head.className = "muted small";
+    head.style.margin = "8px 0 2px";
+    head.textContent = section;
+    host.appendChild(head);
+    for (const f of sections[section]) {
+      const row = document.createElement("div");
+      row.className = "tpl-row";
+      let input;
+      if (!canEdit) {
+        input = document.createElement("span");
+        input.textContent = f.value || "—";
+      } else if (f.value_type === "choice" && f.choices) {
+        input = document.createElement("select");
+        input.dataset.templateId = f.template_id;
+        input.innerHTML = '<option value="">—</option>' +
+          f.choices.split(",").map(c => c.trim()).filter(Boolean)
+            .map(c => `<option ${f.value === c ? "selected" : ""}>${esc(c)}</option>`).join("");
+      } else if (f.value_type === "date") {
+        input = document.createElement("input");
+        input.type = "date";
+        input.value = (f.value || "").slice(0, 10);
+        input.dataset.templateId = f.template_id;
+      } else {
+        input = document.createElement("input");
+        input.type = f.value_type === "number" ? "number" : "text";
+        input.step = "any";
+        input.value = f.value || "";
+        input.placeholder = f.value ? "" : "Not filled in yet";
+        input.dataset.templateId = f.template_id;
+      }
+      const label = document.createElement("label");
+      label.textContent = f.label + (f.unit ? ` (${f.unit})` : "");
+      row.append(label, input);
+      if (f.updated_by) {
+        const who = document.createElement("span");
+        who.className = "muted tiny";
+        who.textContent = `${fmtDT(f.updated_at)} · ${f.updated_by}`;
+        row.appendChild(who);
+      }
+      host.appendChild(row);
+    }
+  }
+}
+
+$("#btn-template-save")?.addEventListener("click", async () => {
+  const pid = state.currentPatient?.patient_id;
+  if (!pid) return toast("No patient open");
+  const values = {};
+  let touched = 0;
+  $$("#chart-template [data-template-id]").forEach(inp => {
+    touched++;
+    values[inp.dataset.templateId] = inp.value;
+  });
+  if (!touched) return toast("Nothing to save");
+  try {
+    await api(`/patients/${pid}/template`, {
+      method: "PUT", body: JSON.stringify({ values }),
+    });
+    toast("Custom fields saved — history updated", "ok");
+    openChart(pid);
   } catch (err) { toast(err.message); }
 });
 
@@ -435,6 +592,12 @@ async function openChart(patientId) {
       n => `${fmtDT(n.created_at)} <em>(${esc(n.category)})</em> — ${esc(n.body)}`);
     renderList("#chart-timeline", chart.timeline,
       t => `${fmtDT(t.created_at)} — ${esc(t.description)}`);
+
+    /* facility-defined fields, grouped by section */
+    try {
+      const tpl = await api(`/patients/${patientId}/template`);
+      renderChartTemplate(tpl);
+    } catch { renderChartTemplate({}); }
 
     /* record history: who changed what, when */
     try {

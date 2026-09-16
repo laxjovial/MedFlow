@@ -231,6 +231,24 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
               </div>
               <table id="departments-table" class="table"></table>
             </div>
+            <div class="card" id="template-card">
+              <h3>Record template</h3>
+              <p class="muted small">The extra details every patient record carries — blood group, next of kin and so on. Add your own fields, rename or remove them; anything already saved stays saved.</p>
+              <form id="template-form" class="inline-form">
+                <input name="label" placeholder="Field name (e.g. Blood group)" required>
+                <select name="value_type" title="Kind of answer">
+                  <option value="text">Short text</option>
+                  <option value="number">Number</option>
+                  <option value="date">Date</option>
+                  <option value="choice">Pick from a list</option>
+                </select>
+                <input name="choices" placeholder="List options, comma-separated (for pick-lists)">
+                <input name="unit" placeholder="Unit (optional, e.g. g/dL)">
+                <input name="section" placeholder="Section (optional, e.g. Screening)">
+                <button class="btn primary">Add field</button>
+              </form>
+              <table id="template-table" class="table"></table>
+            </div>
             <div class="card">
               <h3>Backups</h3>
               <div class="chip-row">
@@ -419,6 +437,11 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
                 <input name="body" placeholder="Note…" required>
                 <button class="btn">Add</button>
               </form>
+            </div>
+            <div class="card">
+              <h3>Custom fields <span class="hint-inline">— your facility's own details</span></h3>
+              <div id="chart-template"></div>
+              <div class="chip-row"><button id="btn-template-save" class="btn">Save changes</button></div>
             </div>
             <div class="card">
               <h3>Timeline</h3><ul id="chart-timeline" class="list"></ul>

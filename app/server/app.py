@@ -25,6 +25,7 @@ from app.server.deps import (
     get_patient_service,
     get_records_service,
     get_reports_service,
+    get_template_service,
     require,
 )
 from app.server.pairing import PairingError, pairing
@@ -708,6 +709,64 @@ def create_app(config: Config | None = None, db=None, repos=None,
             **{k: [i.to_row() if hasattr(i, "to_row") else i
                    for i in v] for k, v in chart.items()},
         }
+
+    # ---------------------------------------------- record template (custom fields)
+
+    @app.get("/api/template/fields", tags=["records"])
+    def template_fields(all: bool = False,
+                        user=Depends(current_user),
+                        templates=Depends(get_template_service)):
+        """The facility's chart fields. Staff edit; everyone can read."""
+        require(user, "records.view")
+        return [f.to_row() for f in templates.fields(include_inactive=all)]
+
+    @app.post("/api/template/fields", status_code=201, tags=["records"])
+    def template_create_field(body: dict, user=Depends(current_user),
+                              templates=Depends(get_template_service)):
+        """Add a chart field every patient record will carry."""
+        require(user, "settings.manage")
+        field = templates.create_field(body)
+        return field.to_row()
+
+    @app.patch("/api/template/fields/{template_id}", tags=["records"])
+    def template_update_field(template_id: int, body: dict,
+                              user=Depends(current_user),
+                              templates=Depends(get_template_service)):
+        """Rename, retype, regroup or reorder a chart field."""
+        require(user, "settings.manage")
+        return templates.update_field(template_id, body).to_row()
+
+    @app.delete("/api/template/fields/{template_id}", tags=["records"])
+    def template_archive_field(template_id: int, user=Depends(current_user),
+                               templates=Depends(get_template_service)):
+        """Take a field off the chart; saved values are kept, never lost."""
+        require(user, "settings.manage")
+        return templates.archive_field(template_id)
+
+    @app.get("/api/patients/{patient_id}/template", tags=["records"])
+    def patient_template_entries(
+            patient_id: int, user=Depends(current_user),
+            templates=Depends(get_template_service)):
+        require(user, "patients.view")
+        return templates.entries_by_section(patient_id)
+
+    @app.put("/api/patients/{patient_id}/template", tags=["records"])
+    def patient_template_set(
+            patient_id: int, body: dict, user=Depends(current_user),
+            templates=Depends(get_template_service)):
+        """Fill in chart fields: {"values": {"<template_id>": "text"}}."""
+        require(user, "records.edit")
+        raw = body.get("values") or {}
+        values: dict[int, str | None] = {}
+        for key, text in raw.items():
+            try:
+                values[int(key)] = None if text is None else str(text)
+            except (TypeError, ValueError):
+                raise ValidationError({
+                    "values": [f"'{key}' is not a field id — "
+                               "use the number shown in the chart."]})
+        entries = templates.set_patient_values(patient_id, values)
+        return [e.to_row() for e in entries]
 
     # -------------------------------------------------- clinical records
 

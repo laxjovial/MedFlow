@@ -17,6 +17,12 @@ from app.models.records import (
 )
 from app.models.audit import AuditEvent, PatientHistoryEvent
 from app.models.org import Device, ShiftAssignment, User, Unit
+from app.models.template import (
+    VALUE_TYPES,
+    TemplateEntry,
+    TemplateField,
+    TemplateValue,
+)
 
 __all__ = [
     "Patient",
@@ -35,4 +41,8 @@ __all__ = [
     "Unit",
     "Device",
     "ShiftAssignment",
+    "TemplateField",
+    "TemplateValue",
+    "TemplateEntry",
+    "VALUE_TYPES",
 ]

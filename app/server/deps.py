@@ -12,7 +12,7 @@ from fastapi import Depends, HTTPException, Request
 from app.errors import AuthorizationError, NotFoundError
 from app.server.tokens import TokenError, verify
 from app.services.patients import PatientService
-from app.services.records import RecordsService
+from app.services.records import RecordsService, TemplateService
 from app.services.reports import ReportsService
 from app.services.security import permissions_for
 from app.utils.dates import to_iso, utcnow
@@ -82,6 +82,10 @@ def get_records_service(request: Request, user=Depends(current_user)) -> Records
     return RecordsService(
         request.app.state.repos, actor=_actor(user), device_id=_device(request)
     )
+
+
+def get_template_service(request: Request, user=Depends(current_user)) -> TemplateService:
+    return TemplateService(request.app.state.repos, actor=_actor(user))
 
 
 def get_reports_service(request: Request, user=Depends(current_user)) -> ReportsService:

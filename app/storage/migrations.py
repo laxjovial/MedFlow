@@ -7,6 +7,7 @@ each is idempotent. A brand-new database applies all migrations from zero.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from app.storage.schema import SCHEMA_VERSION, iter_tables
@@ -30,6 +31,39 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
         conn.execute("ALTER TABLE users ADD COLUMN job_title TEXT"),
         conn.execute("ALTER TABLE users ADD COLUMN phone TEXT"),
     )),
+    # v3 -> v4: record template — facility-defined chart fields + per-patient values
+    (4, lambda conn: (
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS record_templates (
+                template_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                field_key TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                value_type TEXT NOT NULL DEFAULT 'text',
+                choices TEXT,
+                unit TEXT,
+                section TEXT NOT NULL DEFAULT 'General',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT,
+                created_by TEXT,
+                updated_at TEXT
+            )
+        """),
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS record_template_values (
+                value_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL REFERENCES record_templates(template_id) ON DELETE CASCADE,
+                patient_id INTEGER NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+                value_text TEXT,
+                updated_at TEXT,
+                updated_by TEXT,
+                UNIQUE(template_id, patient_id)
+            )
+        """),
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rtv_patient "
+                     "ON record_template_values(patient_id)"),
+        seed_template_defaults(conn),
+    )),
 ]
 
 
@@ -46,6 +80,51 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     for ddl in iter_tables():
         conn.execute(ddl)
     set_user_version(conn, SCHEMA_VERSION)
+    seed_template_defaults(conn)
+    conn.commit()
+
+
+DEFAULT_TEMPLATE_FIELDS = (
+    # label, value_type, choices, unit, section
+    ("Blood group", "choice", "A+, A-, B+, B-, O+, O-, AB+, AB-", "", "Screening"),
+    ("Genotype", "choice", "AA, AS, AC, SS, other", "", "Screening"),
+    ("Next of kin", "text", "", "", "Social history"),
+    ("Next of kin phone", "text", "", "", "Social history"),
+    ("Referral source", "text", "", "", "Social history"),
+)
+
+
+def seed_template_defaults(conn: sqlite3.Connection) -> None:
+    """Give a fresh facility a sensible starter template, exactly once.
+
+    Guarded by a ``schema_meta`` flag so fields a clinic deliberately
+    deleted are never resurrected on the next launch.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_meta ("
+        "key TEXT PRIMARY KEY, value TEXT)")
+    seeded = conn.execute(
+        "SELECT value FROM schema_meta WHERE key = 'template_seeded'"
+    ).fetchone()
+    if seeded:
+        return
+    from app.utils.dates import to_iso, utcnow
+    now = to_iso(utcnow())
+    for order, (label, vtype, choices, unit, section) in enumerate(
+            DEFAULT_TEMPLATE_FIELDS):
+        key = "_".join(w for w in re.split(r"\W+", label.lower()) if w)
+        conn.execute(
+            "INSERT OR IGNORE INTO record_templates "
+            "(field_key, label, value_type, choices, unit, section, "
+            " sort_order, active, created_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'system')",
+            (key, label, vtype, choices or None, unit or None,
+             section, order, now),
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta (key, value) "
+        "VALUES ('template_seeded', '1')"
+    )
 
 
 def migrate(conn: sqlite3.Connection) -> int:
@@ -68,8 +147,20 @@ def migrate(conn: sqlite3.Connection) -> int:
 
     for target, step in MIGRATIONS:
         if current < target <= SCHEMA_VERSION:
-            log.info("migrating schema v%d -> v%d", target - 1, target)
-            step(conn)
-            set_user_version(conn, target)
+            # BEGIN IMMEDIATE serializes concurrent openers: whoever loses
+            # the race re-checks inside the lock and skips if already done.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if get_user_version(conn) < target:
+                    log.info("migrating schema v%d -> v%d", target - 1, target)
+                    step(conn)
+                    set_user_version(conn, target)
+                    conn.commit()
+                else:
+                    conn.execute("ROLLBACK")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            current = target
 
     return get_user_version(conn)

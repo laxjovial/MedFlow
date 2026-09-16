@@ -85,6 +85,18 @@ class SettingsView(ctk.CTkFrame):
         self.backup_list = ctk.CTkFrame(backups, fg_color="transparent")
         self.backup_list.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
 
+        # --------------------------------------------- record template (fields)
+        if "settings.manage" in app.permissions:
+            tpl = Section(scroll, "Record template (custom chart fields)")
+            tpl.pack(fill="x", pady=(0, 12))
+            trow = ctk.CTkFrame(tpl, fg_color="transparent")
+            trow.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 6))
+            ctk.CTkButton(trow, text="＋  New field", font=F_BOLD,
+                          height=34, command=self._add_template_field).pack(side="left")
+            self.template_list = ctk.CTkFrame(tpl, fg_color="transparent")
+            self.template_list.grid(row=2, column=0, sticky="ew", padx=12,
+                                    pady=(0, 12))
+
         # ------------------------------------------------- off-site cloud copy
         cloud = Section(scroll, "Off-site cloud copy (encrypted)")
         cloud.pack(fill="x", pady=(0, 12))
@@ -194,6 +206,41 @@ class SettingsView(ctk.CTkFrame):
                               hover_color="#F8D7D4", text_color=DANGER,
                               command=lambda uid=unit.unit_id, n=unit.name:
                               self._delete_department(uid, n)).pack(side="right")
+
+        if hasattr(self, "template_list"):
+            for w in self.template_list.winfo_children():
+                w.destroy()
+            try:
+                fields = self.app.templates.fields(True)
+            except Exception:
+                fields = []
+            if not fields:
+                ctk.CTkLabel(self.template_list, text="No custom fields yet",
+                             font=F_SMALL, text_color=MUTED,
+                             anchor="w").pack(fill="x")
+            for f in fields:
+                row = ctk.CTkFrame(self.template_list, fg_color="transparent")
+                row.pack(fill="x", pady=1)
+                desc = f"{f.label}  ({f.value_type}"
+                if f.value_type == "choice" and f.choices:
+                    desc += f": {f.choices}"
+                desc += f") · {f.section}"
+                if not f.active:
+                    desc += "  · removed"
+                ctk.CTkLabel(row, text=desc, font=F_SMALL,
+                             anchor="w").pack(side="left")
+                ctk.CTkButton(row, text="Edit", font=F_SMALL, height=26,
+                              width=76,
+                              command=lambda tid=f.template_id:
+                              self._edit_template_field(tid)).pack(side="right",
+                                                                   padx=(6, 0))
+                if f.active:
+                    ctk.CTkButton(row, text="Remove", font=F_SMALL, height=26,
+                                  width=76, fg_color="#FDECEA",
+                                  hover_color="#F8D7D4", text_color=DANGER,
+                                  command=lambda tid=f.template_id, n=f.label:
+                                  self._remove_template_field(tid, n)).pack(
+                        side="right")
 
         if hasattr(self, "temp_list"):
             for w in self.temp_list.winfo_children():
@@ -327,6 +374,60 @@ class SettingsView(ctk.CTkFrame):
         ], lambda v: self.app.set_storage_mode(
             local=False, api_base_url=v["api_base_url"]),
             submit_text="Save")
+
+    def _add_template_field(self) -> None:
+        FormDialog(self, "New record field", [
+            FormField("label", "Field name", required=True,
+                      placeholder="e.g. Blood group, Next of kin"),
+            FormField("value_type", "Kind of answer", kind="option",
+                      options=("text", "number", "date", "choice")),
+            FormField("choices", "List options (for pick-lists)",
+                      placeholder="comma-separated, e.g. A+, A-, B+, B-"),
+            FormField("unit", "Unit (optional)", placeholder="e.g. g/dL"),
+            FormField("section", "Section (grouping on the chart)",
+                      placeholder="e.g. Screening"),
+        ], self._submit_template_field, submit_text="Create")
+
+    def _submit_template_field(self, values: dict) -> None:
+        data = {k: v for k, v in values.items() if v}
+        data.setdefault("value_type", "text")
+        if not data.get("section"):
+            data["section"] = "General"
+        self.app.templates.create_field(data)
+        self.app.toast("Field added to the record template", "ok")
+        self.refresh_lists()
+
+    def _edit_template_field(self, template_id: int) -> None:
+        fields = {f.template_id: f for f in self.app.templates.fields(True)}
+        field = fields.get(template_id)
+        if not field:
+            return
+        FormDialog(self, f"Edit field — {field.label}", [
+            FormField("label", "Field name", required=True),
+            FormField("section", "Section",),
+            *([FormField("choices", "List options (comma-separated)")]
+              if field.value_type == "choice" else []),
+        ], lambda v: (self.app.templates.update_field(
+            template_id,
+            {k: val for k, val in v.items() if val is not None}),
+            self.app.toast("Field updated", "ok"), self.refresh_lists()),
+            values={"label": field.label, "section": field.section,
+                    "choices": field.choices or ""},
+            submit_text="Save")
+
+    def _remove_template_field(self, template_id: int, label: str) -> None:
+        if not self.app.confirm(
+                "Remove field",
+                f'Remove "{label}" from the chart?\n\n'
+                "Nothing already saved is deleted — the field just stops "
+                "showing on new charts."):
+            return
+        try:
+            self.app.templates.archive_field(template_id)
+            self.app.toast("Field removed from the chart", "ok")
+        except Exception as exc:
+            self.app.toast(str(exc), "error")
+        self.refresh_lists()
 
     def _add_department(self) -> None:
         FormDialog(self, "New department", [

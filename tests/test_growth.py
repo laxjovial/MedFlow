@@ -367,3 +367,191 @@ def test_staff_accounts_carry_details(client, auth):
     assert up.status_code == 200
     assert up.json()["job_title"] == "Ward Sister"
     assert up.json()["phone"] == "+2348020001111"  # untouched fields survive
+
+
+# --------------------------------------------------------- record template ---
+
+class TestRecordTemplate:
+    """The facility's own chart fields: define once, fill per patient."""
+
+    def _register(self, client, auth, name="Ada Obi"):
+        r = client.post("/api/patients", headers=auth,
+                        json={"name": name, "age": 34})
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def test_seeded_defaults_present(self, client, auth):
+        r = client.get("/api/template/fields", headers=auth)
+        assert r.status_code == 200
+        labels = [f["label"] for f in r.json()]
+        assert "Blood group" in labels
+        assert "Next of kin" in labels
+
+    def test_create_validate_and_fill_value(self, client, auth):
+        pid = self._register(client, auth)["patient_id"]
+
+        # a pick-list field with options
+        r = client.post("/api/template/fields", headers=auth, json={
+            "label": "HIV status", "value_type": "choice",
+            "choices": "pending, negative, positive", "section": "Screening"})
+        assert r.status_code == 201, r.text
+        field = r.json()
+        assert field["field_key"] == "hiv_status"
+
+        # fill it for the patient
+        r = client.put(f"/api/patients/{pid}/template", headers=auth,
+                       json={"values": {str(field["template_id"]): "negative"}})
+        assert r.status_code == 200, r.text
+        assert r.json()[0]["value"] == "negative"
+
+        # chart shows it grouped by section
+        r = client.get(f"/api/patients/{pid}/template", headers=auth)
+        assert r.status_code == 200
+        assert "Screening" in r.json()
+        entry = next(e for e in r.json()["Screening"]
+                     if e["label"] == "HIV status")
+        assert entry["value"] == "negative"
+        assert entry["updated_by"] == "admin"
+
+        # history records the fill-in
+        r = client.get(f"/api/patients/{pid}/versions", headers=auth)
+        assert any("HIV status: negative" in v["description"]
+                   for v in r.json())
+
+    def test_choice_rejects_invalid_option(self, client, auth):
+        r = client.post("/api/template/fields", headers=auth, json={
+            "label": "Ward", "value_type": "choice",
+            "choices": "A, B, C", "section": "General"})
+        field = r.json()
+        pid = self._register(client, auth, "Bola Test")["patient_id"]
+        r = client.put(f"/api/patients/{pid}/template", headers=auth,
+                       json={"values": {str(field["template_id"]): "Z"}})
+        assert r.status_code == 422
+        assert "must be one of" in r.json()["error"]["message"]
+
+    def test_number_field_rejects_text(self, client, auth):
+        r = client.post("/api/template/fields", headers=auth, json={
+            "label": "Pack cell volume", "value_type": "number",
+            "unit": "%", "section": "Screening"})
+        field = r.json()
+        pid = self._register(client, auth, "Chidi Test")["patient_id"]
+        r = client.put(f"/api/patients/{pid}/template", headers=auth,
+                       json={"values": {str(field["template_id"]): "very high"}})
+        assert r.status_code == 422
+
+    def test_rename_field_and_archive_keeps_values(self, client, auth):
+        r = client.post("/api/template/fields", headers=auth, json={
+            "label": "Tribe", "value_type": "text", "section": "Social history"})
+        field = r.json()
+        pid = self._register(client, auth, "Dede Test")["patient_id"]
+        client.put(f"/api/patients/{pid}/template", headers=auth,
+                   json={"values": {str(field["template_id"]): "Igbo"}})
+
+        # rename
+        r = client.patch(f"/api/template/fields/{field['template_id']}",
+                         headers=auth, json={"label": "Ethnic group"})
+        assert r.status_code == 200
+        assert r.json()["label"] == "Ethnic group"
+
+        # archive: chart hides it, values survive
+        r = client.delete(f"/api/template/fields/{field['template_id']}",
+                          headers=auth)
+        assert r.status_code == 200
+        r = client.get(f"/api/patients/{pid}/template", headers=auth)
+        assert all(e["label"] != "Ethnic group"
+                   for e in r.json().get("General", []))
+
+        # a brand-new field with a different name works fine afterwards
+        r = client.post("/api/template/fields", headers=auth, json={
+            "label": "Ethnic group", "value_type": "text"})
+        assert r.status_code == 201
+        # and re-creating the exact old name still collides (key is stable)
+        r = client.post("/api/template/fields", headers=auth, json={
+            "label": "Tribe", "value_type": "text"})
+        assert r.status_code == 422
+
+    def test_duplicate_label_rejected(self, client, auth):
+        r = client.post("/api/template/fields", headers=auth, json={
+            "label": "Blood group", "value_type": "text"})
+        assert r.status_code == 422
+
+    def test_non_admin_cannot_shape_template(self, client, auth):
+        r = client.post("/api/org/users", headers=auth, json={
+            "username": "tplnurse", "display_name": "Tpl Nurse",
+            "password": "tplnurse-pass-1", "role": "nurse"})
+        assert r.status_code == 201, r.text
+        r = client.post("/api/auth/login",
+                        json={"username": "tplnurse",
+                              "password": "tplnurse-pass-1"})
+        nurse = {"Authorization": f"Bearer {r.json()['token']}"}
+
+        # nurses fill values…
+        pid = self._register(client, auth, "Efe Test")["patient_id"]
+        fields = client.get("/api/template/fields", headers=auth).json()
+        blood = next(f for f in fields if f["label"] == "Blood group")
+        r = client.put(f"/api/patients/{pid}/template", headers=nurse,
+                       json={"values": {str(blood["template_id"]): "O+"}})
+        assert r.status_code == 200
+
+        # …but cannot change the template itself
+        r = client.post("/api/template/fields", headers=nurse,
+                        json={"label": "Sneaky field"})
+        assert r.status_code == 403
+        r = client.delete(f"/api/template/fields/{blood['template_id']}",
+                          headers=nurse)
+        assert r.status_code == 403
+
+    def test_clearing_a_value_is_recorded(self, client, auth):
+        pid = self._register(client, auth, "Femi Test")["patient_id"]
+        fields = client.get("/api/template/fields", headers=auth).json()
+        kin = next(f for f in fields if f["label"] == "Next of kin")
+        tid = str(kin["template_id"])
+        client.put(f"/api/patients/{pid}/template", headers=auth,
+                   json={"values": {tid: "Ngozi Obi"}})
+        r = client.put(f"/api/patients/{pid}/template", headers=auth,
+                       json={"values": {tid: ""}})
+        assert r.status_code == 200
+        assert r.json()[0]["value"] is None
+        hist = client.get(f"/api/patients/{pid}/versions", headers=auth).json()
+        assert any("Next of kin: cleared" in v["description"] for v in hist)
+
+    def test_migration_preserves_existing_db(self, tmp_path):
+        """A v3 database opens cleanly and gains the template tables."""
+        import sqlite3
+
+        from app.storage.migrations import get_user_version, migrate
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            CREATE TABLE patients (
+                patient_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_number TEXT UNIQUE, name TEXT NOT NULL, age INTEGER,
+                sex TEXT, phone TEXT, email TEXT, address TEXT,
+                date_of_birth TEXT, blood_pressure TEXT, heart_rate INTEGER,
+                weight REAL, diagnosis TEXT, notes TEXT, medical_history TEXT,
+                deleted INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1,
+                origin_unit_id INTEGER, created_at TEXT, updated_at TEXT
+            );
+            CREATE TABLE users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL, password_hash TEXT,
+                display_name TEXT NOT NULL, role TEXT NOT NULL, active INTEGER,
+                created_at TEXT
+            );
+        """)
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+        assert get_user_version(conn) == 3
+        migrate(conn)
+        assert get_user_version(conn) == 4
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(record_templates)")}
+        assert "field_key" in cols and "section" in cols
+        # defaults seeded exactly once
+        n = conn.execute("SELECT COUNT(*) FROM record_templates").fetchone()[0]
+        assert n == 5
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) "
+            "VALUES ('template_seeded', '1')")
+        conn.commit()
+        conn.close()

@@ -74,6 +74,8 @@ class AppController:
                                        device_id=self.device_id)
         self.records = RecordsService(self.repos, actor=self.actor,
                                       device_id=self.device_id)
+        from app.services.records import TemplateService
+        self.templates = TemplateService(self.repos, actor=self.actor)
         self.reports = ReportsService(self.repos)
         self.report_service = self.reports
         self.org = OrgService(self.repos, self.security, actor=self.actor,

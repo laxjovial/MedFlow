@@ -8,6 +8,9 @@ entry in CLINICAL_MODELS away.
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
+
 from app.errors import NotFoundError, ValidationError
 from app.models import (
     Allergy,
@@ -17,10 +20,14 @@ from app.models import (
     LabResult,
     Medication,
     PatientHistoryEvent,
+    TemplateEntry,
     Vitals,
+    TemplateField,
+    TemplateValue,
+    VALUE_TYPES,
 )
 from app.models.audit import EVENT_CREATED, EVENT_UPDATED
-from app.storage.repositories import APPOINTMENT_STATUSES
+from app.storage.repositories import APPOINTMENT_STATUSES, TemplateRepository
 from app.utils.dates import to_iso, utcnow
 
 VITAL_RANGES = {
@@ -330,3 +337,251 @@ class RecordsService:
     def providers(self) -> list[str]:
         """Everyone who has appointments on the books, for filter menus."""
         return self.repos["appointments"].providers()
+
+
+class TemplateService:
+    """The facility's record template: chart fields every patient shares.
+
+    Doctors and nurses can add, edit, archive or reorder fields (with
+    ``settings.manage``); anyone who can view records fills in values.
+    Every definition change and every filled value lands in the patient's
+    history, so the timeline stays complete.
+    """
+
+    VALID_TYPES = VALUE_TYPES
+
+    def __init__(self, repos, actor: str = "system"):
+        self.repos = repos
+        self.actor = actor
+
+    # ------------------------------------------------------- definitions
+
+    def _require_edit(self, user=None) -> None:
+        """Template shape changes are admin-level; value entry is not."""
+
+    def fields(self, include_inactive: bool = False) -> list[TemplateField]:
+        return self.repos["template"].list_fields(include_inactive)
+
+    def create_field(self, data: dict) -> TemplateField:
+        label = (data.get("label") or "").strip()
+        if not label:
+            raise ValidationError("Give the field a name (e.g. 'Blood group').")
+        value_type = data.get("value_type") or "text"
+        if value_type not in self.VALID_TYPES:
+            raise ValidationError(
+                f"Unknown field type '{value_type}'. "
+                f"Use one of: {', '.join(self.VALID_TYPES)}.")
+        choices = (data.get("choices") or "").strip() or None
+        if value_type == "choice" and not choices:
+            raise ValidationError(
+                "A dropdown field needs at least one option — "
+                "type them separated by commas.")
+        section = (data.get("section") or "General").strip() or "General"
+        unit = (data.get("unit") or "").strip() or None
+        field_key = data.get("field_key") or "_".join(
+            w for w in re.split(r"\W+", label.lower()) if w)
+        if not field_key:
+            raise ValidationError(
+                "Could not turn that name into a storage key — try "
+                "a name with letters or numbers.")
+        repo: TemplateRepository = self.repos["template"]
+        if repo.field_key_exists(field_key):
+            raise ValidationError(
+                f"A field called '{label}' already exists.")
+        field = TemplateField(
+            label=label,
+            field_key=field_key,
+            value_type=value_type,
+            choices=choices,
+            unit=unit,
+            section=section,
+            sort_order=data.get("sort_order")
+            if data.get("sort_order") is not None else repo.next_sort_order(),
+            active=True,
+            created_by=self.actor,
+        )
+        repo.insert_field(field)
+        self.repos["audit"].record(AuditEvent(
+            action="template.field_added", entity_type="record_template",
+            entity_id=str(field.template_id),
+            details=(f"Added record field '{label}' ({value_type}, "
+                     f"section '{section}')"),
+            actor=self.actor,
+        ))
+        return field
+
+    def update_field(self, template_id: int, data: dict) -> TemplateField:
+        repo: TemplateRepository = self.repos["template"]
+        field = repo.get_field(template_id)
+        if not field:
+            raise NotFoundError(f"Record field #{template_id} does not exist.")
+        changes: list[str] = []
+        updates: list[str] = []
+        if "label" in data:
+            new_label = (data["label"] or "").strip()
+            if not new_label:
+                raise ValidationError("The field name cannot be empty.")
+            if new_label != field.label:
+                changes.append(f"name: {field.label} → {new_label}")
+                field.label = new_label
+                updates.append("label")
+        if "value_type" in data and data["value_type"] != field.value_type:
+            if data["value_type"] not in self.VALID_TYPES:
+                raise ValidationError(
+                    f"Unknown field type '{data['value_type']}'.")
+            changes.append(f"type: {field.value_type} → {data['value_type']}")
+            field.value_type = data["value_type"]
+            updates.append("value_type")
+        if "choices" in data:
+            new_choices = (data["choices"] or "").strip() or None
+            if new_choices != field.choices:
+                changes.append(f"options: {field.choices or '—'} → "
+                               f"{new_choices or '—'}")
+                field.choices = new_choices
+                updates.append("choices")
+        if "unit" in data:
+            new_unit = (data["unit"] or "").strip() or None
+            if new_unit != field.unit:
+                changes.append(f"unit: {field.unit or '—'} → {new_unit or '—'}")
+                field.unit = new_unit
+                updates.append("unit")
+        if "section" in data:
+            new_section = (data["section"] or "General").strip() or "General"
+            if new_section != field.section:
+                changes.append(f"section: {field.section} → {new_section}")
+                field.section = new_section
+                updates.append("section")
+        if "sort_order" in data and data["sort_order"] is not None \
+                and int(data["sort_order"]) != field.sort_order:
+            field.sort_order = int(data["sort_order"])
+            updates.append("sort_order")
+        if updates:
+            updates.append("updated_at")
+            repo.update_field(field, updates)
+            if changes:
+                self.repos["audit"].record(AuditEvent(
+                    action="template.field_updated", entity_type="record_template",
+                    entity_id=str(template_id),
+                    details=f"Updated record field: {'; '.join(changes)}",
+                    actor=self.actor,
+                ))
+        return field
+
+    def archive_field(self, template_id: int) -> dict:
+        """Remove a field from the chart without destroying any data."""
+        repo: TemplateRepository = self.repos["template"]
+        field = repo.get_field(template_id)
+        if not field:
+            raise NotFoundError(f"Record field #{template_id} does not exist.")
+        repo.archive_field(template_id)
+        self.repos["audit"].record(AuditEvent(
+            action="template.field_removed", entity_type="record_template",
+            entity_id=str(template_id),
+            details=(f"Removed record field '{field.label}' from the chart "
+                     "(saved values kept)"),
+            actor=self.actor,
+        ))
+        return {"archived": True, "template_id": template_id,
+                "label": field.label}
+
+    # ------------------------------------------------------- patient values
+
+    def _field_or_404(self, template_id: int) -> TemplateField:
+        field = self.repos["template"].get_field(template_id)
+        if not field or not field.active:
+            raise NotFoundError(
+                f"Record field #{template_id} does not exist or is removed.")
+        return field
+
+    @staticmethod
+    def _validate_value(field: TemplateField, value_text: str | None) -> str | None:
+        value_text = (value_text or "").strip() or None
+        if value_text is None:
+            return None
+        if field.value_type == "number":
+            try:
+                float(value_text)
+            except ValueError:
+                raise ValidationError(
+                    f"'{field.label}' is a number field — "
+                    f"'{value_text}' is not a number.")
+        if field.value_type == "date":
+            try:
+                datetime.strptime(value_text[:10], "%Y-%m-%d")
+            except ValueError:
+                raise ValidationError(
+                    f"'{field.label}' is a date field — use YYYY-MM-DD.")
+        if field.value_type == "choice" and field.choices:
+            allowed = [c.strip() for c in field.choices.split(",") if c.strip()]
+            if value_text not in allowed:
+                raise ValidationError(
+                    f"'{field.label}' must be one of: {', '.join(allowed)}.")
+        return value_text
+
+    def set_patient_value(self, patient_id: int, template_id: int,
+                          value_text: str | None) -> TemplateEntry:
+        """Fill in (or clear) one field for one patient, with history."""
+        patient = self.repos["patients"].get(patient_id)
+        if not patient:
+            raise NotFoundError(f"Patient #{patient_id} does not exist.")
+        field = self._field_or_404(template_id)
+        clean = self._validate_value(field, value_text)
+        old = self.repos["template"].get_value(template_id, patient_id)
+        old_text = old.value_text if old else None
+        if clean == old_text:
+            return self._entry(field, clean, old)
+        self.repos["template"].set_value(TemplateValue(
+            template_id=template_id, patient_id=patient_id,
+            value_text=clean, updated_by=self.actor,
+        ))
+        action = "Updated" if old_text else "Recorded"
+        if clean is None:
+            desc = f"{field.label}: cleared"
+        elif old_text:
+            desc = f"{field.label}: {old_text} → {clean}"
+        else:
+            desc = f"{field.label}: {clean}"
+        self.repos["audit"].add_history(PatientHistoryEvent(
+            patient_id=patient_id, event_type=EVENT_UPDATED,
+            description=f"{action} — {desc}", actor=self.actor,
+            unit_id=patient.origin_unit_id,
+        ))
+        return self._entry(field, clean,
+                           self.repos["template"].get_value(template_id,
+                                                            patient_id))
+
+    def set_patient_values(self, patient_id: int,
+                           values: dict[int, str]) -> list[TemplateEntry]:
+        """Fill several fields at once (the chart's template panel)."""
+        return [self.set_patient_value(patient_id, tid, text)
+                for tid, text in values.items()]
+
+    def patient_entries(self, patient_id: int) -> list[TemplateEntry]:
+        self.repos["patients"].get(patient_id)  # scope + existence
+        return self.repos["template"].entries_for_patient(patient_id)
+
+    def entries_by_section(self, patient_id: int) -> dict[str, list[dict]]:
+        """Chart-ready grouping: {section: [entry, …]} in display order."""
+        grouped: dict[str, list[dict]] = {}
+        for entry in self.patient_entries(patient_id):
+            grouped.setdefault(entry.section, []).append(entry.to_row())
+        return grouped
+
+    # ------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _entry(field: TemplateField, value_text: str | None,
+               stored: TemplateValue | None) -> TemplateEntry:
+        return TemplateEntry(
+            template_id=field.template_id,
+            field_key=field.field_key,
+            label=field.label,
+            value_type=field.value_type,
+            choices=field.choices,
+            unit=field.unit,
+            section=field.section,
+            sort_order=field.sort_order,
+            value_text=value_text,
+            updated_by=stored.updated_by if stored else None,
+            updated_at=stored.updated_at if stored else None,
+        )

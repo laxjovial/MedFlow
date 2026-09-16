@@ -22,12 +22,16 @@ from app.models import (
     PatientHistoryEvent,
     PatientSummary,
     ShiftAssignment,
+    TemplateEntry,
+    TemplateField,
+    TemplateValue,
     Unit,
     User,
     Vitals,
     format_patient_number,
 )
 from app.models._serial import serializable  # noqa: F401  (re-exported convenience)
+from app.utils.dates import to_iso, utcnow
 from app.utils.dates import from_iso, to_iso, utcnow
 
 # Clinical record tables share identical CRUD shape; one generic class
@@ -616,6 +620,137 @@ class AuditRepository(_Repository):
         return [PatientHistoryEvent.from_row(r) for r in rows]
 
 
+class TemplateRepository(_Repository):
+    """Facility-defined chart fields and their per-patient values.
+
+    The template table is the definition side (what fields exist); the
+    values table is the data side (what each patient's answer is). The
+    join in ``entries_for_patient`` drives every chart display.
+    """
+
+    table = "record_templates"
+
+    # ------------------------------------------------------------- fields
+
+    def list_fields(self, include_inactive: bool = False) -> list[TemplateField]:
+        sql = "SELECT * FROM record_templates"
+        if not include_inactive:
+            sql += " WHERE active = 1"
+        sql += " ORDER BY section COLLATE NOCASE, sort_order, template_id"
+        rows = self._query_all(sql)
+        return [TemplateField.from_row(r) for r in rows]
+
+    def get_field(self, template_id: int) -> TemplateField | None:
+        row = self._query_one(
+            "SELECT * FROM record_templates WHERE template_id = ?",
+            (template_id,),
+        )
+        return TemplateField.from_row(row) if row else None
+
+    def field_key_exists(self, field_key: str,
+                         exclude_id: int | None = None) -> bool:
+        sql = "SELECT 1 FROM record_templates WHERE field_key = ?"
+        params: list = [field_key]
+        if exclude_id:
+            sql += " AND template_id != ?"
+            params.append(exclude_id)
+        return self._query_one(sql, tuple(params)) is not None
+
+    def insert_field(self, field: TemplateField) -> TemplateField:
+        row = field.row_for_storage()
+        row.pop("template_id", None)
+        row.setdefault("created_at", to_iso(utcnow()))
+        cols = ", ".join(row)
+        marks = ", ".join("?" for _ in row)
+        cur = self._exec(
+            f"INSERT INTO record_templates ({cols}) VALUES ({marks})",
+            tuple(row.values()),
+        )
+        field.template_id = cur.lastrowid
+        return field
+
+    def update_field(self, field: TemplateField,
+                     fields: Iterable[str]) -> TemplateField:
+        row = field.row_for_storage()
+        updates = [f for f in fields if f in row]
+        if updates:
+            assignments = ", ".join(f"{f} = ?" for f in updates)
+            params = [row[f] for f in updates] + [field.template_id]
+            self._exec(
+                f"UPDATE record_templates SET {assignments} "
+                "WHERE template_id = ?",
+                tuple(params),
+            )
+        return field
+
+    def archive_field(self, template_id: int) -> bool:
+        """Soft-remove: hide the field but keep every patient value."""
+        cur = self._exec(
+            "UPDATE record_templates SET active = 0, updated_at = ? "
+            "WHERE template_id = ?",
+            (to_iso(utcnow()), template_id),
+        )
+        return cur.rowcount > 0
+
+    def next_sort_order(self) -> int:
+        row = self._query_one(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS n "
+            "FROM record_templates"
+        )
+        return int(row["n"]) if row else 0
+
+    # ------------------------------------------------------------- values
+
+    def get_value(self, template_id: int, patient_id: int) -> TemplateValue | None:
+        row = self._query_one(
+            "SELECT * FROM record_template_values "
+            "WHERE template_id = ? AND patient_id = ?",
+            (template_id, patient_id),
+        )
+        return TemplateValue.from_row(row) if row else None
+
+    def set_value(self, value: TemplateValue) -> TemplateValue:
+        """Insert or update one patient's answer (upsert on the pair)."""
+        existing = self.get_value(value.template_id, value.patient_id)
+        now = to_iso(utcnow())
+        value.updated_at = now
+        if existing:
+            self._exec(
+                "UPDATE record_template_values SET value_text = ?, "
+                "updated_at = ?, updated_by = ? WHERE value_id = ?",
+                (value.value_text, now, value.updated_by, existing.value_id),
+            )
+            value.value_id = existing.value_id
+        else:
+            row = value.to_row()
+            row.pop("value_id", None)
+            cols = ", ".join(row)
+            marks = ", ".join("?" for _ in row)
+            cur = self._exec(
+                f"INSERT INTO record_template_values ({cols}) "
+                f"VALUES ({marks})",
+                tuple(row.values()),
+            )
+            value.value_id = cur.lastrowid
+        return value
+
+    def entries_for_patient(self, patient_id: int) -> list[TemplateEntry]:
+        """Active fields joined with this patient's values, display-ready."""
+        rows = self._query_all(
+            "SELECT t.template_id, t.field_key, t.label, t.value_type, "
+            "       t.choices, t.unit, t.section, t.sort_order, "
+            "       v.value_text, v.updated_by, v.updated_at "
+            "FROM record_templates t "
+            "LEFT JOIN record_template_values v "
+            "       ON v.template_id = t.template_id "
+            "      AND v.patient_id = ? "
+            "WHERE t.active = 1 "
+            "ORDER BY t.section COLLATE NOCASE, t.sort_order, t.template_id",
+            (patient_id,),
+        )
+        return [TemplateEntry(**r) for r in rows]
+
+
 class StatsRepository(_Repository):
     """Dashboard aggregates in a single round trip."""
 
@@ -665,6 +800,7 @@ def build_repositories(db) -> dict[str, Any]:
         "devices": DeviceRepository(db),
         "audit": AuditRepository(db),
         "stats": StatsRepository(db),
+        "template": TemplateRepository(db),
     }
     for table, model in CLINICAL_MODELS.items():
         repos[table] = ClinicalRecordRepository(db, table, model)

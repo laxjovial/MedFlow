@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -221,6 +221,36 @@ TABLES: tuple[str, ...] = (
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_events(created_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS record_templates (
+        template_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        field_key TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        value_type TEXT NOT NULL DEFAULT 'text',
+        choices TEXT,
+        unit TEXT,
+        section TEXT NOT NULL DEFAULT 'General',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT,
+        created_by TEXT,
+        updated_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS record_template_values (
+        value_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        template_id INTEGER NOT NULL REFERENCES record_templates(template_id) ON DELETE CASCADE,
+        patient_id INTEGER NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+        value_text TEXT,
+        updated_at TEXT,
+        updated_by TEXT,
+        UNIQUE(template_id, patient_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_rtv_patient ON record_template_values(patient_id)
     """,
     """
     CREATE TABLE IF NOT EXISTS schema_meta (
