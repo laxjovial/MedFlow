@@ -136,16 +136,27 @@ class PatientRepository(_Repository):
 
     def by_department(self, unit_id: int | None = None,
                       limit: int = 500) -> list[PatientSummary]:
-        """A department's roster, or the whole facility when unit is None."""
-        sql = ("SELECT patient_id, patient_number, name, age, diagnosis, "
-               "updated_at, version FROM patients WHERE deleted = 0")
-        params: list[Any] = []
-        if unit_id is not None:
-            sql += " AND origin_unit_id = ?"
-            params.append(unit_id)
-        sql += " ORDER BY name COLLATE NOCASE LIMIT ?"
-        params.append(limit)
-        return [PatientSummary.from_row(r) for r in self._query_all(sql, params)]
+        """A department's roster (primary or extra membership), or the
+        whole facility when unit is None."""
+        if unit_id is None:
+            sql = ("SELECT patient_id, patient_number, name, age, diagnosis, "
+                   "updated_at, version FROM patients WHERE deleted = 0 "
+                   "ORDER BY name COLLATE NOCASE LIMIT ?")
+            return [PatientSummary.from_row(r)
+                    for r in self._query_all(sql, (limit,))]
+        sql = """
+            SELECT p.patient_id, p.patient_number, p.name, p.age,
+                   p.diagnosis, p.updated_at, p.version
+            FROM patients p
+            WHERE p.deleted = 0 AND (
+                p.origin_unit_id = ?
+                OR p.patient_id IN (
+                    SELECT pd.patient_id FROM patient_departments pd
+                    WHERE pd.unit_id = ?))
+            ORDER BY p.name COLLATE NOCASE LIMIT ?
+        """
+        return [PatientSummary.from_row(r)
+                for r in self._query_all(sql, (unit_id, unit_id, limit))]
 
     def deleted_summaries(self) -> list[PatientSummary]:
         """Soft-deleted patients, most recently active first (recycle bin)."""
@@ -529,12 +540,25 @@ class UnitRepository(_Repository):
         }
 
     def patient_counts(self) -> dict[int, int]:
-        """Patients per unit, for department lists and dashboards."""
+        """Patients per department, primary OR extra membership, for lists
+        and dashboards. A patient in two wards counts in both."""
         rows = self._query_all(
-            "SELECT origin_unit_id AS uid, COUNT(*) AS n FROM patients "
-            "WHERE origin_unit_id IS NOT NULL AND deleted = 0 "
-            "GROUP BY origin_unit_id")
-        return {int(r["uid"]): int(r["n"]) for r in rows}
+            """
+            SELECT uid, SUM(n) AS total FROM (
+                SELECT origin_unit_id AS uid, COUNT(*) AS n
+                FROM patients
+                WHERE origin_unit_id IS NOT NULL AND deleted = 0
+                GROUP BY origin_unit_id
+                UNION ALL
+                SELECT pd.unit_id AS uid, COUNT(DISTINCT pd.patient_id) AS n
+                FROM patient_departments pd
+                JOIN patients p ON p.patient_id = pd.patient_id
+                WHERE p.deleted = 0
+                GROUP BY pd.unit_id
+            ) WHERE uid IS NOT NULL
+            GROUP BY uid
+            """)
+        return {int(r["uid"]): int(r["total"]) for r in rows}
 
 
 class DeviceRepository(_Repository):
@@ -594,6 +618,16 @@ class AuditRepository(_Repository):
         rows = self._query_all(
             "SELECT * FROM audit_events ORDER BY event_id DESC LIMIT ?",
             (limit,),
+        )
+        return [AuditEvent.from_row(r) for r in rows]
+
+    def history_for_entity(self, entity_type: str, entity_id: str,
+                           limit: int = 100) -> list[AuditEvent]:
+        """Everything the audit trail says about one entity, newest first."""
+        rows = self._query_all(
+            "SELECT * FROM audit_events WHERE entity_type = ? AND entity_id = ? "
+            "ORDER BY event_id DESC LIMIT ?",
+            (entity_type, str(entity_id), limit),
         )
         return [AuditEvent.from_row(r) for r in rows]
 
@@ -804,4 +838,6 @@ def build_repositories(db) -> dict[str, Any]:
     }
     for table, model in CLINICAL_MODELS.items():
         repos[table] = ClinicalRecordRepository(db, table, model)
+    from app.storage.access import extend_repositories
+    extend_repositories(repos)
     return repos

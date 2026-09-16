@@ -88,5 +88,10 @@ def get_template_service(request: Request, user=Depends(current_user)) -> Templa
     return TemplateService(request.app.state.repos, actor=_actor(user))
 
 
+def get_onboarding_service(request: Request, user=Depends(current_user)):
+    from app.services.onboarding import OnboardingService
+    return OnboardingService(request.app.state.repos, actor=_actor(user))
+
+
 def get_reports_service(request: Request, user=Depends(current_user)) -> ReportsService:
     return ReportsService(request.app.state.repos)

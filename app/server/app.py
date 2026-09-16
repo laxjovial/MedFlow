@@ -22,6 +22,7 @@ from app.errors import (
 )
 from app.server.deps import (
     current_user,
+    get_onboarding_service,
     get_patient_service,
     get_records_service,
     get_reports_service,
@@ -63,6 +64,7 @@ class SignupRequest(BaseModel):
     display_name: str
     password: str
     email: str | None = None
+    invite_code: str | None = None  # staff invite: account starts pending
 
 
 class GoogleLoginRequest(BaseModel):
@@ -341,6 +343,22 @@ def create_app(config: Config | None = None, db=None, repos=None,
         closable via config for private deployments.
         """
         cfg = request.app.state.config
+        from app.services.onboarding import PENDING_ROLE
+        if body.invite_code:
+            # Invited signups bypass the open-signup toggle but land pending.
+            from app.services.onboarding import OnboardingService
+            ob = OnboardingService(request.app.state.repos, actor="signup")
+            try:
+                user = ob.signup_with_invite(
+                    body.invite_code, body.username, body.display_name,
+                    body.password, body.email)
+            except MedFlowError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            return {"pending": True, "user": {
+                "id": user.user_id, "username": user.username,
+                "display_name": user.display_name, "role": user.role,
+                "message": "Account created — an administrator still "
+                           "needs to approve it before you can sign in."}}
         if cfg and not getattr(cfg, "allow_open_signup", True):
             raise HTTPException(status_code=403, detail="Signup is disabled here")
         from app.services.security import SecurityService
@@ -767,6 +785,124 @@ def create_app(config: Config | None = None, db=None, repos=None,
                                "use the number shown in the chart."]})
         entries = templates.set_patient_values(patient_id, values)
         return [e.to_row() for e in entries]
+
+    # -------------------------------------------------- departments per patient
+
+    @app.get("/api/patients/{patient_id}/departments", tags=["org"])
+    def patient_departments(patient_id: int, user=Depends(current_user),
+                            patients=Depends(get_patient_service)):
+        """Every department this patient belongs to."""
+        require(user, "patients.view")
+        repos = patients.repos
+        out = []
+        for uid in patients.departments_of(patient_id):
+            unit = repos["units"].get(uid)
+            if unit:
+                out.append({"unit_id": unit.unit_id, "name": unit.name})
+        return out
+
+    @app.put("/api/patients/{patient_id}/departments", tags=["org"])
+    def patient_departments_set(patient_id: int, body: dict,
+                                user=Depends(current_user),
+                                patients=Depends(get_patient_service)):
+        """Replace memberships: {"unit_ids": [1, 3]} (empty list clears)."""
+        require(user, "patients.edit")
+        ids = patients.set_departments(patient_id, body.get("unit_ids") or [])
+        return {"unit_ids": ids}
+
+    # -------------------------------------------------- notifications
+
+    @app.get("/api/notifications", tags=["notifications"])
+    def notifications(limit: int = 50, user=Depends(current_user),
+                      request: Request = None):
+        from app.services.onboarding import NotificationService
+        ns = NotificationService(request.app.state.repos)
+        return {
+            "unread": ns.unread_count(user["sub"]),
+            "items": ns.feed(user["sub"], limit),
+        }
+
+    @app.post("/api/notifications/{notification_id}/read", tags=["notifications"])
+    def notification_read(notification_id: int, body: dict,
+                          user=Depends(current_user), request: Request = None):
+        """Mark read or unread: {"read": true|false}."""
+        from app.services.onboarding import NotificationService
+        ns = NotificationService(request.app.state.repos)
+        row = ns.mark(user["sub"], notification_id, bool(body.get("read", True)))
+        if not row:
+            raise HTTPException(status_code=404, detail="No such notification")
+        return row
+
+    @app.post("/api/notifications/read-all", tags=["notifications"])
+    def notifications_read_all(user=Depends(current_user),
+                               request: Request = None):
+        from app.services.onboarding import NotificationService
+        ns = NotificationService(request.app.state.repos)
+        return {"marked": ns.mark_all(user["sub"])}
+
+    # -------------------------------------------------- onboarding: invites & approval
+
+    @app.get("/api/invites", tags=["org"])
+    def list_invites(user=Depends(current_user),
+                     ob=Depends(get_onboarding_service)):
+        require(user, "users.manage")
+        return ob.list_invites()
+
+    @app.post("/api/invites", status_code=201, tags=["org"])
+    def create_invite(body: dict, user=Depends(current_user),
+                      ob=Depends(get_onboarding_service)):
+        """Mint an invite code for a new hire."""
+        require(user, "users.manage")
+        return ob.create_invite(
+            role=body.get("role") or "viewer",
+            unit_id=int(body["unit_id"]) if body.get("unit_id") else None,
+            label=body.get("label"),
+            days_valid=int(body.get("days_valid") or 14),
+            max_uses=int(body.get("max_uses") or 1))
+
+    @app.post("/api/invites/validate", tags=["org"])
+    def validate_invite(body: dict):
+        """Public: does this code work? (signup page pre-check; no use spent)"""
+        from app.services.onboarding import OnboardingService
+        repos = app.state.repos
+        ob = OnboardingService(repos, actor="signup")
+        invite = ob.peek(body.get("code") or "")
+        if not invite:
+            raise ValidationError({"code": [
+                "This invite code is not valid (expired, used up, or "
+                "withdrawn). Ask your administrator for a new one."]})
+        return {"valid": True, "role": invite["role"],
+                "label": invite.get("label")}
+
+    @app.post("/api/invites/{invite_id}/revoke", tags=["org"])
+    def revoke_invite(invite_id: int, user=Depends(current_user),
+                      ob=Depends(get_onboarding_service)):
+        require(user, "users.manage")
+        ob.revoke_invite(invite_id)
+        return {"revoked": invite_id}
+
+    @app.get("/api/onboarding/pending", tags=["org"])
+    def pending_accounts(user=Depends(current_user),
+                         ob=Depends(get_onboarding_service)):
+        require(user, "users.manage")
+        return [u.to_row() for u in ob.pending_accounts()]
+
+    @app.post("/api/onboarding/{user_id}/approve", tags=["org"])
+    def approve_account(user_id: int, body: dict = None,
+                        user=Depends(current_user),
+                        ob=Depends(get_onboarding_service)):
+        """Approve a pending account — audit-stamped who approved whom."""
+        require(user, "users.manage")
+        u = ob.approve(user_id, (body or {}).get("note") or "")
+        return u.to_row()
+
+    @app.post("/api/onboarding/{user_id}/decline", tags=["org"])
+    def decline_account(user_id: int, body: dict = None,
+                        user=Depends(current_user),
+                        ob=Depends(get_onboarding_service)):
+        require(user, "users.manage")
+        u = ob.decline(user_id, (body or {}).get("note") or "")
+        return u.to_row()
 
     # -------------------------------------------------- clinical records
 

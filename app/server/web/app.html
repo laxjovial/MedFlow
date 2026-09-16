@@ -26,6 +26,9 @@
       <span id="facility-label" class="muted"></span>
     </div>
     <div class="top-actions">
+      <button id="btn-bell" class="btn ghost bell" title="Notifications">
+        🔔<span id="bell-badge" class="bell-badge hidden"></span>
+      </button>
       <span id="whoami" class="muted"></span>
       <button id="btn-pair-desktop" class="btn ghost hidden" title="Let the desktop app sign in with this session">Pair desktop app</button>
       <button id="btn-logout" class="btn ghost">Sign out</button>
@@ -58,6 +61,10 @@
           <div class="stat"><div class="stat-num" id="st-appts">–</div><div class="muted">Appointments today</div></div>
           <div class="stat"><div class="stat-num" id="st-dx">–</div><div class="muted">Active diagnoses</div></div>
           <div class="stat"><div class="stat-num" id="st-crit">–</div><div class="muted">Critical labs</div></div>
+        </div>
+        <div class="row-between" style="margin:6px 0 14px">
+          <span class="muted small">Start here: the most common actions, one click away.</span>
+          <button id="btn-dash-new-patient" class="btn primary" style="display:none">＋ Register a new patient</button>
         </div>
         <div class="two-col">
           <div class="card"><h3>Next appointments</h3><table id="dash-appts" class="table"></table></div>
@@ -126,25 +133,48 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
       </section>
 
       <section id="view-access" class="view hidden">
-        <h2>Temporary access</h2>
-        <p class="muted">Create a scoped, time-limited account for a visitor. They will see
-           only the patients you pick, and only until the window closes.</p>
+        <h2>Guest access</h2>
+        <p class="muted">Let an outsider — a visiting consultant, a student, an auditor —
+           look at a few patient files for a limited time. You choose exactly
+           <strong>who</strong> they are, <strong>which patients</strong> they may open,
+           and <strong>how long</strong> the door stays open. When time is up (or you
+           close it early) they are locked out automatically.</p>
         <div class="card">
-          <h3>Create guest access</h3>
+          <h3>Open the door for a guest</h3>
           <form id="temp-form" class="inline-form">
-            <input name="label" placeholder="Who is it for?" required>
-            <input name="hours" type="number" min="1" max="720" value="24" style="max-width:110px" title="Hours of access">
-            <input name="patient_ids" placeholder="Patient IDs, e.g. 1,3" required>
-            <button class="btn primary">Create</button>
+            <label>Who is the guest? (a name you'll recognise)
+              <input name="label" placeholder="e.g. Dr Adeyemi — visiting cardiologist" required
+                     title="Anything that helps you remember who this access was for.">
+            </label>
+            <label>How long can they look?
+              <select name="hours_preset" id="temp-duration" title="The door closes by itself when time is up.">
+                <option value="4">4 hours — one meeting</option>
+                <option value="24">1 day</option>
+                <option value="72">3 days</option>
+                <option value="168">1 week</option>
+                <option value="custom">Other…</option>
+              </select>
+            </label>
+            <label id="temp-custom-wrap" class="hidden">Hours (1 to 720)
+              <input name="hours" type="number" min="1" max="720" value="24" style="max-width:110px">
+            </label>
+            <label>Which patients may they open?
+              <select name="patient_pick" id="temp-patient-pick"
+                      title="Start typing a name or patient number, then press Add. Repeat for each patient.">
+              </select>
+            </label>
+            <div id="temp-picked" class="chip-row"></div>
+            <p class="muted small">Search above by name or number (like <em>MF-000004</em>), press <strong>Add</strong>,
+               and repeat for each patient they need. Nothing else is visible to them.</p>
+            <button class="btn primary">Create guest account</button>
           </form>
-          <p class="muted small">Find patient IDs in the directory (the numeric part of e.g. MF-000004).</p>
           <div id="temp-credential" class="hidden" style="margin-top:12px">
             <div class="code" id="temp-credential-text"></div>
             <p class="ok small">Share these now — the password is shown only once.</p>
           </div>
         </div>
         <div class="card">
-          <h3>Active guest accounts</h3>
+          <h3>Guest doors — open and closed</h3>
           <table id="temp-table" class="table"></table>
         </div>
       </section>
@@ -217,13 +247,14 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
 
       <section id="view-settings" class="view hidden">
         <h2>Settings</h2>
-        <div class="two-col">
+        <nav id="settings-nav" class="settings-nav" aria-label="Settings sections"></nav>
+        <div class="two-col" id="settings-body">
           <div>
-            <div class="card">
+            <div class="card" id="set-facility">
               <h3>Facility</h3>
               <p class="muted" id="settings-facility">—</p>
             </div>
-            <div class="card" id="departments-card">
+            <div class="card" id="set-departments">
               <h3>Departments</h3>
               <p class="muted small">Wards, clinics and units — the workspace grows as your facility does.</p>
               <div class="chip-row">
@@ -231,7 +262,7 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
               </div>
               <table id="departments-table" class="table"></table>
             </div>
-            <div class="card" id="template-card">
+            <div class="card" id="set-template">
               <h3>Record template</h3>
               <p class="muted small">The extra details every patient record carries — blood group, next of kin and so on. Add your own fields, rename or remove them; anything already saved stays saved.</p>
               <form id="template-form" class="inline-form">
@@ -249,7 +280,7 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
               </form>
               <table id="template-table" class="table"></table>
             </div>
-            <div class="card">
+            <div class="card" id="set-backups">
               <h3>Backups</h3>
               <div class="chip-row">
                 <button id="btn-backup-now" class="btn primary">Create backup now</button>
@@ -257,7 +288,7 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
               </div>
               <table id="backups-table" class="table"></table>
             </div>
-            <div class="card" id="cloud-card">
+            <div class="card" id="set-cloud">
               <h3>Off-site cloud copy</h3>
               <p class="muted small">An extra copy of your records in cloud storage that <strong>you own</strong> — MedFlow never hosts them and never charges you for space. Two ways to switch it on:</p>
               <ul class="plain-list">
@@ -294,7 +325,7 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
               </form>
               <p id="cloud-msg" class="muted small hidden"></p>
             </div>
-            <div class="card">
+            <div class="card" id="set-session">
               <h3>Session &amp; sign-out</h3>
               <p class="muted small">How long people stay signed in — see <a href="/security">the security page</a> for what this means.</p>
               <div class="inline-form" id="session-form">
@@ -306,13 +337,13 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
                 <p class="muted small" id="session-status">—</p>
               </div>
             </div>
-            <div class="card">
+            <div class="card" id="set-bin">
               <h3>Recycle bin (soft-deleted records)</h3>
               <table id="bin-table" class="table"></table>
             </div>
           </div>
           <div>
-            <div class="card" id="staff-card">
+            <div class="card" id="set-staff">
               <h3>Staff &amp; colleagues</h3>
               <p class="muted small">Every account is a person on your team — doctors, nurses, midwives, receptionists, lab scientists. Give each one a role so MedFlow shows them the right tools.</p>
               <form id="staff-form" class="inline-form">
@@ -334,7 +365,47 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
               </form>
               <table id="staff-table" class="table"></table>
             </div>
-            <div class="card" id="automation-card">
+            <div class="card" id="set-onboarding">
+              <h3>Joining staff — invites &amp; approvals</h3>
+              <p class="muted small">When someone new joins, hand them an <strong>invite code</strong>. They sign up
+                 with it on the sign-up page; the account waits <em>pending</em> until an administrator
+                 here approves it. Every step is written to the activity log, so it's always
+                 clear who approved whom.</p>
+              <form id="invite-form" class="inline-form">
+                <label>Full name
+                  <input name="label" placeholder="e.g. Dr Bello — paediatrics">
+                </label>
+                <label>Their role when approved
+                  <select name="role" title="What they'll be allowed to do once approved.">
+                    <option value="physician">Doctor / physician</option>
+                    <option value="nurse">Nurse / midwife</option>
+                    <option value="reception">Front desk / reception</option>
+                    <option value="technician">Lab / technician</option>
+                    <option value="viewer">View only</option>
+                    <option value="administrator">Administrator</option>
+                  </select>
+                </label>
+                <label>Department
+                  <select name="unit_id" id="invite-unit"><option value="">No department</option></select>
+                </label>
+                <label>Code works for
+                  <select name="days_valid">
+                    <option value="7">1 week</option>
+                    <option value="14" selected>2 weeks</option>
+                    <option value="30">30 days</option>
+                  </select>
+                </label>
+                <button class="btn primary">Make invite code</button>
+              </form>
+              <div id="invite-code-out" class="hidden" style="margin-top:8px">
+                <div class="code" id="invite-code-text"></div>
+                <p class="ok small">Give this code to the new hire — they enter it on the sign-up page. It is shown only once here.</p>
+              </div>
+              <table id="invites-table" class="table"></table>
+              <h3 style="margin-top:14px">Waiting for approval</h3>
+              <table id="pending-table" class="table"></table>
+            </div>
+            <div class="card" id="set-automation">
               <h3>Automation rules</h3>
               <form id="rule-form" class="inline-form">
                 <input name="name" placeholder="Rule name" required>
@@ -363,6 +434,14 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
         </div>
       </section>
 
+      <div id="notif-panel" class="notif-panel hidden">
+        <div class="row-between" style="padding:10px 14px;border-bottom:1px solid var(--line)">
+          <strong>Notifications</strong>
+          <button id="btn-notif-all-read" class="btn ghost" style="padding:2px 10px">Mark all read</button>
+        </div>
+        <div id="notif-list" class="notif-list"></div>
+      </div>
+
       <dialog id="dlg-pairing">
         <form method="dialog" id="form-pairing" class="dlg-form">
           <h3>Pair the desktop app</h3>
@@ -378,6 +457,7 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
       <section id="view-chart" class="view hidden">
         <button class="btn ghost" id="btn-back">← Back to patients</button>
         <div id="chart-head"></div>
+        <div class="chip-row" id="chart-departments" style="margin-bottom:12px"></div>
         <div class="two-col">
           <div>
             <div class="card">
@@ -462,43 +542,91 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
 </div>
 
 <dialog id="dlg-patient">
-  <form method="dialog" id="form-patient" class="dlg-form">
+  <form method="dialog" id="form-patient" class="dlg-form" novalidate>
     <h3 id="dlg-patient-title">New patient</h3>
+    <p class="muted small">Only <strong>full name</strong> is required to save — everything else can be filled in later on the patient's page.</p>
     <div class="grid2">
-      <label>Full name<input name="name" required></label>
-      <label>Age<input name="age" type="number" min="0" max="130"></label>
-      <label>Sex<select name="sex"><option value=""></option><option>female</option><option>male</option><option>other</option></select></label>
-      <label>Date of birth<input name="date_of_birth" type="date"></label>
-      <label>Phone<input name="phone"></label>
-      <label>Email<input name="email" type="email"></label>
-      <label>Department<select name="department_id" id="form-dept"><option value="">— none —</option></select></label>
-      <label>Blood pressure<input name="blood_pressure" placeholder="120/80"></label>
-      <label>Heart rate<input name="heart_rate" type="number"></label>
-      <label>Weight (kg)<input name="weight" type="number" step="0.1"></label>
+      <label>Full name *<input name="name" required
+        title="The patient's full name, e.g. Grace Uche — letters, spaces and hyphens only.">
+      </label>
+      <label>Phone
+        <input name="phone" title="A number we can reach the patient on, e.g. +2348012345678.">
+      </label>
+      <label>Sex
+        <select name="sex" title="The patient's sex — used for clinical dosing and screening rules.">
+          <option value="">— not recorded —</option>
+          <option>female</option><option>male</option><option>other</option>
+        </select>
+      </label>
+      <label>Date of birth
+        <input name="date_of_birth" type="date" id="pf-dob"
+          title="Their date of birth — the age box fills itself in from this.">
+      </label>
+      <label>Age
+        <input name="age" type="number" min="0" max="130" id="pf-age"
+          title="How old they are in years — the date-of-birth box fills itself from this (an approximate date is calculated).">
+      </label>
+      <label>Email
+        <input name="email" type="email" title="An email address, only if the patient has one — leave blank otherwise.">
+      </label>
+      <label>Home address
+        <input name="address" title="Where the patient lives — street, town.">
+      </label>
+      <label>Departments
+        <div id="pf-depts" class="check-stack" title="Which departments this patient belongs to — tick as many as apply."></div>
+      </label>
+      <label>Blood pressure
+        <input name="blood_pressure" placeholder="120/80" title="Two numbers, top over bottom, e.g. 120/80. Optional.">
+      </label>
+      <label>Heart rate (beats per minute)
+        <input name="heart_rate" type="number" title="Heartbeats per minute, a whole number like 72. Optional.">
+      </label>
+      <label>Weight (kilograms)
+        <input name="weight" type="number" step="0.1" title="Weight in kilograms, e.g. 64.5. Optional.">
+      </label>
     </div>
-    <label>Medical history<textarea name="medical_history" rows="3"></textarea></label>
-    <label>Diagnosis<textarea name="diagnosis" rows="2"></textarea></label>
-    <label>Notes<textarea name="notes" rows="2"></textarea></label>
+    <label>Medical history
+      <textarea name="medical_history" rows="3" title="Past illnesses, surgeries, ongoing conditions — anything a clinician should know. Optional."></textarea>
+    </label>
+    <label>Current diagnosis
+      <textarea name="diagnosis" rows="2" title="What the patient is being seen for right now. Optional."></textarea>
+    </label>
+    <label>Notes
+      <textarea name="notes" rows="2" title="Anything else worth remembering. Optional."></textarea>
+    </label>
     <p class="error hidden" id="form-patient-error"></p>
     <div class="row-end">
-      <button value="cancel" class="btn ghost">Cancel</button>
+      <button type="button" value="cancel" id="btn-patient-cancel" class="btn ghost">Cancel — don't save</button>
       <button value="ok" id="btn-save-patient" class="btn primary">Save patient</button>
     </div>
   </form>
 </dialog>
 
 <dialog id="dlg-appointment">
-  <form method="dialog" id="form-appointment" class="dlg-form">
+  <form method="dialog" id="form-appointment" class="dlg-form" novalidate>
     <h3>Schedule appointment</h3>
-    <label>Patient ID<input name="patient_id" type="number" required placeholder="Patient #"></label>
-    <label>When<input name="scheduled_at" type="datetime-local" required></label>
-    <label>Provider — the doctor or nurse who will see them<input name="provider" list="provider-list"></label>
+    <p class="muted small">Book a patient in front of a specific staff member. When you save,
+       that person gets a notification on their bell.</p>
+    <label>Patient ID
+      <input name="patient_id" type="number" required placeholder="Patient #"
+             title="The number on the patient's chart, e.g. 4 for MF-000004.">
+    </label>
+    <label>When
+      <input name="scheduled_at" type="datetime-local" required
+             title="The date and time of the visit — use the picker.">
+    </label>
+    <label>Staff member who will see them
+      <input name="provider" list="provider-list"
+             title="Pick the doctor, nurse or midwife from the list — they'll be notified.">
+    </label>
     <datalist id="provider-list"></datalist>
-    <label>Reason<input name="reason"></label>
+    <label>Reason for the visit
+      <input name="reason" title="What the visit is for, e.g. antenatal check-up. Optional.">
+    </label>
     <p class="error hidden" id="form-appointment-error"></p>
     <div class="row-end">
-      <button value="cancel" class="btn ghost">Cancel</button>
-      <button value="ok" class="btn primary">Schedule</button>
+      <button type="button" value="cancel" id="btn-appt-cancel" class="btn ghost">Cancel — don't book</button>
+      <button value="ok" class="btn primary">Book appointment</button>
     </div>
   </form>
 </dialog>

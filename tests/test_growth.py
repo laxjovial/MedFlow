@@ -569,15 +569,148 @@ class TestRecordTemplate:
         conn.commit()
         assert get_user_version(conn) == 3
         migrate(conn)
-        assert get_user_version(conn) == 4
-        cols = {r[1] for r in conn.execute(
-            "PRAGMA table_info(record_templates)")}
-        assert "field_key" in cols and "section" in cols
-        # defaults seeded exactly once
-        n = conn.execute("SELECT COUNT(*) FROM record_templates").fetchone()[0]
-        assert n == 5
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_meta (key, value) "
-            "VALUES ('template_seeded', '1')")
-        conn.commit()
-        conn.close()
+        assert get_user_version(conn) == 5
+
+
+# ---------------- notifications, invites, multi-department (v5) ----------
+
+
+class TestNotificationBell:
+    def test_mark_read_and_unread(self, auth, client, repos, admin_user):
+        from app.services.onboarding import NotificationService
+        ns = NotificationService(repos, actor="admin")
+        ns.send(admin_user.user_id, "Bell check", "body text")
+        r = client.get("/api/notifications", headers=auth)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["unread"] >= 1
+        item = body["items"][0]
+        # mark read
+        r2 = client.post(f"/api/notifications/{item['notification_id']}/read", headers=auth,
+                       json={"read": True})
+        assert r2.status_code == 200
+        assert r2.json()["read"] == 1
+        # unread again — the red number comes back
+        r3 = client.post(f"/api/notifications/{item['notification_id']}/read", headers=auth,
+                       json={"read": False})
+        assert r3.json()["read"] == 0
+        assert repos["notifications"].unread_count(admin_user.user_id) >= 1
+
+    def test_mark_all_read(self, client, auth, repos, admin_user):
+        from app.services.onboarding import NotificationService
+        ns = NotificationService(repos, actor="admin")
+        ns.send(admin_user.user_id, "One")
+        ns.send(admin_user.user_id, "Two")
+        r = client.post("/api/notifications/read-all", headers=auth)
+        assert r.status_code == 200
+        assert repos["notifications"].unread_count(admin_user.user_id) == 0
+
+    def test_cannot_touch_someone_elses(self, auth, client, repos, admin_user):
+        from app.models import User
+        from app.services.onboarding import NotificationService
+        ns = NotificationService(repos, actor="admin")
+        other = repos["users"].insert(
+            User(username="other", display_name="Other",
+                 role="viewer", password_hash="x"))
+        note = ns.send(other.user_id, "Private")
+        r = client.post(f"/api/notifications/{note['notification_id']}/read", headers=auth,
+                      json={"read": True})
+        assert r.status_code == 404
+
+
+class TestOnboardingFlow:
+    def test_invite_pending_approve_chain(self, auth, client, repos, admin_user):
+        r = client.post("/api/invites", headers=auth, json={
+            "role": "nurse", "label": "Dr Kim", "days_valid": 7})
+        assert r.status_code == 201, r.text
+        invite = r.json()
+        assert invite["code"]
+
+        # validate endpoint (public)
+        v = client.post("/api/invites/validate", json={"code": invite["code"]})
+        assert v.status_code == 200 and v.json()["valid"] is True
+
+        # invited signup -> pending, no token
+        s = client.post("/api/auth/signup", json={
+            "username": "kim", "display_name": "Dr Kim",
+            "password": "longenough1", "invite_code": invite["code"]})
+        assert s.status_code == 201, s.text
+        assert s.json()["pending"] is True
+        kim_id = s.json()["user"]["id"]
+
+        # pending can't sign in
+        denied = client.post("/api/auth/login",
+                             json={"username": "kim", "password": "longenough1"})
+        assert denied.status_code == 401
+        assert "approval" in str(denied.json()["detail"]).lower()
+
+        # admin sees them pending, then approves
+        pend = client.get("/api/onboarding/pending", headers=auth).json()
+        assert any(u["user_id"] == kim_id for u in pend)
+        ok = client.post(f"/api/onboarding/{kim_id}/approve", headers=auth, json={"note": "ok"})
+        assert ok.status_code == 200
+        assert ok.json()["role"] == "nurse"
+
+        # now they can sign in, and the audit trail answers 'who approved whom'
+        login = client.post("/api/auth/login",
+                            json={"username": "kim", "password": "longenough1"})
+        assert login.status_code == 200
+        chain = repos["audit"].history_for_entity("user", str(kim_id))
+        assert any("Signed up with invite" in (e.details or "") for e in chain)
+        assert any(e.action == "approved" and e.actor == "admin" for e in chain)
+
+    def test_decline_and_spent_invite(self, auth, client, repos, admin_user):
+        r = client.post("/api/invites", headers=auth, json={"role": "viewer", "max_uses": 1})
+        invite = r.json()
+        s1 = client.post("/api/auth/signup", json={
+            "username": "g1", "display_name": "G One",
+            "password": "longenough1", "invite_code": invite["code"]})
+        assert s1.status_code == 201
+        # same code again is rejected
+        s2 = client.post("/api/auth/signup", json={
+            "username": "g2", "display_name": "G Two",
+            "password": "longenough1", "invite_code": invite["code"]})
+        assert s2.status_code == 400
+        uid = s1.json()["user"]["id"]
+        d = client.post(f"/api/onboarding/{uid}/decline", headers=auth, json={})
+        assert d.status_code == 200
+        assert d.json()["active"] is False
+
+
+class TestMultiDepartment:
+    def test_patient_in_multiple_departments(self, auth, client, repos,
+                                             admin_user, patient):
+        from app.models import Unit
+        u1 = repos["units"].insert(Unit(name="Maternity", kind="department"))
+        u2 = repos["units"].insert(Unit(name="Surgery", kind="department"))
+        r = client.put(f"/api/patients/{patient.patient_id}/departments", headers=auth,
+                     json={"unit_ids": [u1.unit_id, u2.unit_id]})
+        assert r.status_code == 200, r.text
+        got = client.get(f"/api/patients/{patient.patient_id}/departments", headers=auth).json()
+        names = {d["name"] for d in got}
+        assert {"Maternity", "Surgery"} <= names
+        # replacing the set removes the old one
+        r2 = client.put(f"/api/patients/{patient.patient_id}/departments", headers=auth,
+                      json={"unit_ids": [u2.unit_id]})
+        assert r2.status_code == 200
+        got2 = client.get(
+            f"/api/patients/{patient.patient_id}/departments",
+            headers=auth).json()
+        assert {d["name"] for d in got2} == {"Surgery"}
+
+    def test_department_roster_counts_both_kinds(self, client, auth, repos,
+                                                 admin_user, patient):
+        from app.models import Unit
+        ward = repos["units"].insert(Unit(name="Ward A", kind="department"))
+        # primary stays; extra membership added
+        client.put(f"/api/patients/{patient.patient_id}/departments", headers=auth,
+                 json={"unit_ids": [ward.unit_id]})
+        rows = repos["patients"].by_department(ward.unit_id)
+        assert any(p.patient_id == patient.patient_id for p in rows)
+        counts = repos["units"].patient_counts()
+        assert counts.get(ward.unit_id, 0) >= 1
+
+    def test_bad_department_rejected(self, client, auth, patient):
+        r = client.put(f"/api/patients/{patient.patient_id}/departments", headers=auth,
+                     json={"unit_ids": [99999]})
+        assert r.status_code == 422

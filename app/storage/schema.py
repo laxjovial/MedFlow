@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -251,6 +251,51 @@ TABLES: tuple[str, ...] = (
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_rtv_patient ON record_template_values(patient_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS patient_departments (
+        row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+        unit_id INTEGER NOT NULL REFERENCES units(unit_id) ON DELETE CASCADE,
+        assigned_at TEXT,
+        assigned_by TEXT,
+        UNIQUE(patient_id, unit_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_pdept_unit ON patient_departments(unit_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS notifications (
+        notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+        kind TEXT NOT NULL DEFAULT 'general',
+        title TEXT NOT NULL,
+        body TEXT,
+        link TEXT,
+        read INTEGER NOT NULL DEFAULT 0,
+        read_at TEXT,
+        created_at TEXT,
+        created_by TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invites (
+        invite_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL UNIQUE,
+        role TEXT NOT NULL DEFAULT 'viewer',
+        unit_id INTEGER REFERENCES units(unit_id),
+        label TEXT,
+        created_by TEXT,
+        created_at TEXT,
+        expires_at TEXT NOT NULL,
+        max_uses INTEGER NOT NULL DEFAULT 1,
+        used_count INTEGER NOT NULL DEFAULT 0,
+        revoked INTEGER NOT NULL DEFAULT 0
+    )
     """,
     """
     CREATE TABLE IF NOT EXISTS schema_meta (

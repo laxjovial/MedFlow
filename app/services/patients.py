@@ -331,6 +331,40 @@ class PatientService:
         self._audit(EVENT_UPDATED, "patient", patient.patient_number, summary)
         return patient
 
+    def departments_of(self, patient_id: int) -> list[int]:
+        """Every department a patient belongs to (primary + extra)."""
+        self._check_scope(patient_id)
+        ids = list(self.repos["patient_departments"].departments_for(patient_id))
+        patient = self.get(patient_id)
+        if patient.origin_unit_id and patient.origin_unit_id not in ids:
+            ids.insert(0, patient.origin_unit_id)
+        return ids
+
+    def set_departments(self, patient_id: int, unit_ids: list[int]) -> list[int]:
+        """Replace the patient's department memberships (idempotent)."""
+        patient = self.get(patient_id)
+        clean: list[int] = []
+        for raw in unit_ids or []:
+            try:
+                uid = int(raw)
+            except (TypeError, ValueError):
+                raise ValidationError({"unit_ids": [
+                    f"'{raw}' is not a department id."]})
+            unit = self.repos["units"].get(uid)
+            if not unit or unit.kind == "organization":
+                raise ValidationError({"unit_ids": [
+                    f"Department #{raw} does not exist."]})
+            clean.append(uid)
+        self.repos["patient_departments"].set_departments(
+            patient_id, clean, self.actor)
+        names = [self.repos["units"].get(uid).name for uid in clean]
+        self._history(
+            patient_id, EVENT_UPDATED,
+            "Departments: " + (", ".join(names) if names else "none") + ".")
+        self._audit(EVENT_UPDATED, "patient", patient.patient_number,
+                    "departments: " + (", ".join(names) or "none"))
+        return clean
+
     def delete(self, patient_id: int) -> bool:
         """Soft delete: hidden by default, restorable, never reuses the ID."""
         patient = self.repos["patients"].get(patient_id)

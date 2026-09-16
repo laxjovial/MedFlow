@@ -113,9 +113,15 @@ class PatientsView(ctk.CTkFrame):
         ctk.CTkLabel(head, text=patient.name,
                      font=("Segoe UI", 20, "bold")).pack(side="left")
         dept_label = ""
-        if patient.origin_unit_id:
-            dept_label = next((f"  ·  {u.name}" for u in self.app.org.list_units()
-                               if u.unit_id == patient.origin_unit_id), "")
+        try:
+            dept_ids = self.app.patients.departments_of(patient_id)
+        except Exception:
+            dept_ids = []
+        if dept_ids:
+            names = [u.name for u in self.app.org.list_units()
+                     if u.unit_id in dept_ids]
+            if names:
+                dept_label = "  ·  " + ", ".join(names)
         ctk.CTkLabel(head, text=f"  {patient.patient_number}  ·  "
                                 f"{self.app.age_display(patient)}  ·  "
                                 f"{patient.sex or 'sex n/a'}{dept_label}",

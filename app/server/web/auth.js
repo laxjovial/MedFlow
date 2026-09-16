@@ -84,6 +84,7 @@ if (signupForm) {
     const box = $("#signup-error");
     box.classList.add("hidden");
     try {
+      const invite = $("#su-invite")?.value.trim() || null;
       const data = await api("/auth/signup", {
         method: "POST",
         body: JSON.stringify({
@@ -91,8 +92,17 @@ if (signupForm) {
           display_name: $("#su-name").value.trim(),
           email: $("#su-email").value.trim() || null,
           password: $("#su-pass").value,
+          invite_code: invite || undefined,
         }),
       });
+      if (data.pending) {
+        // invited accounts wait for an administrator's approval
+        box.textContent = data.user?.message ||
+          "Account created — an administrator still needs to approve it.";
+        box.classList.remove("hidden");
+        box.classList.add("ok");
+        return;
+      }
       saveSession(data);
     } catch (err) {
       box.textContent = err.message;

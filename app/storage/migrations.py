@@ -64,6 +64,53 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
                      "ON record_template_values(patient_id)"),
         seed_template_defaults(conn),
     )),
+    # v4 -> v5: notifications, staff invites, multi-department patients
+    (5, lambda conn: (
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS patient_departments (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id INTEGER NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+                unit_id INTEGER NOT NULL REFERENCES units(unit_id) ON DELETE CASCADE,
+                assigned_at TEXT,
+                assigned_by TEXT,
+                UNIQUE(patient_id, unit_id)
+            )
+        """),
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pdept_unit "
+                     "ON patient_departments(unit_id)"),
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+                kind TEXT NOT NULL DEFAULT 'general',
+                title TEXT NOT NULL,
+                body TEXT,
+                link TEXT,
+                read INTEGER NOT NULL DEFAULT 0,
+                read_at TEXT,
+                created_at TEXT,
+                created_by TEXT
+            )
+        """),
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_notif_user "
+                     "ON notifications(user_id, read)"),
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS invites (
+                invite_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL DEFAULT 'viewer',
+                unit_id INTEGER REFERENCES units(unit_id),
+                label TEXT,
+                created_by TEXT,
+                created_at TEXT,
+                expires_at TEXT NOT NULL,
+                max_uses INTEGER NOT NULL DEFAULT 1,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                revoked INTEGER NOT NULL DEFAULT 0
+            )
+        """),
+        conn.execute("UPDATE users SET active = active WHERE 1"),
+    )),
 ]
 
 

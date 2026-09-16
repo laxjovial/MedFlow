@@ -101,6 +101,9 @@ function enterApp() {
     : perms.size ? `${perms.size} permissions` : "read-only session";
   showView("dashboard");
   loadDashboard();
+  initBell();
+  initSettingsNav();
+  initTempAccessForm();
   api("/health").then(h =>
     $("#facility-label").textContent = `— ${h.facility}`).catch(() => {});
 }
@@ -128,26 +131,27 @@ $$(".nav-btn").forEach(btn =>
     if (btn.dataset.view === "activity") loadActivity();
   }));
 
-/* sidebar collapse on narrow screens */
+/* sidebar collapse on narrow screens — the toggle lives OUTSIDE the nav so
+   it survives hiding the menu (restores the "no way back in" bug) */
 const sideBar = document.getElementById("side");
 const toggleBtn = document.getElementById("side-collapse");
-toggleBtn.addEventListener("click", () => {
-  const collapsed = sideBar.style.display === "none";
-  sideBar.style.display = collapsed ? "" : "none";
-  toggleBtn.textContent = collapsed ? "◀ Hide menu" : "▶ Show menu";
-  if (!collapsed && window.innerWidth < 700) toggleBtn.style.display = "none";
-  if (collapsed) {
-    toggleBtn.style.display = "";
-    toggleBtn.style.position = "fixed";
-    toggleBtn.style.top = "64px";
-    toggleBtn.style.left = "10px";
-    toggleBtn.style.zIndex = "30";
-    toggleBtn.style.background = "#fff";
-    toggleBtn.style.border = "1px solid var(--line)";
-    toggleBtn.style.padding = "6px 10px";
-    toggleBtn.style.borderRadius = "8px";
-  }
-});
+if (sideBar && toggleBtn) {
+  document.body.appendChild(toggleBtn);   // move button out of the nav
+  toggleBtn.addEventListener("click", () => {
+    const collapsed = sideBar.style.display === "none";
+    sideBar.style.display = collapsed ? "" : "none";
+    toggleBtn.textContent = collapsed ? "◀ Hide menu" : "▶ Show menu";
+    toggleBtn.classList.toggle("floating", !collapsed);
+    toggleBtn.style.position = "";
+    toggleBtn.style.top = "";
+    toggleBtn.style.left = "";
+    toggleBtn.style.zIndex = "";
+    toggleBtn.style.background = "";
+    toggleBtn.style.border = "";
+    toggleBtn.style.padding = "";
+    toggleBtn.style.borderRadius = "";
+  });
+}
 
 /* ------------------------------------------------------------------ dashboard */
 
@@ -159,6 +163,10 @@ async function loadDashboard() {
     $("#st-appts").textContent = stats.appointments_today;
     $("#st-dx").textContent = stats.active_diagnoses;
     $("#st-crit").textContent = stats.critical_labs;
+    const perms = new Set(state.user.permissions || []);
+    const dashNew = $("#btn-dash-new-patient");
+    if (dashNew)
+      dashNew.style.display = perms.has("patients.create") ? "" : "none";
     $("#st-crit").closest(".stat").style.borderColor =
       stats.critical_labs > 0 ? "var(--danger)" : "";
 
@@ -189,13 +197,14 @@ let deptCache = [];
 async function loadDepartments() {
   try {
     deptCache = await api("/departments");
-    const sel = $("#form-dept");
-    if (sel) {
-      const current = sel.value;
-      sel.innerHTML = '<option value="">— none —</option>' +
+    renderPfDepartments();
+    const inviteUnit = $("#invite-unit");
+    if (inviteUnit) {
+      const cur = inviteUnit.value;
+      inviteUnit.innerHTML = '<option value="">No department</option>' +
         deptCache.filter(d => d.kind !== "organization")
           .map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
-      sel.value = current;
+      if ([...inviteUnit.options].some(o => o.value === cur)) inviteUnit.value = cur;
     }
     const table = $("#departments-table");
     if (table) {
@@ -599,6 +608,15 @@ async function openChart(patientId) {
       renderChartTemplate(tpl);
     } catch { renderChartTemplate({}); }
 
+    /* departments this patient belongs to */
+    try {
+      const pdepts = await api(`/patients/${patientId}/departments`);
+      const host = $("#chart-departments");
+      if (host) host.innerHTML = pdepts.length
+        ? pdepts.map(d => `<span class="picked-chip">${esc(d.name)}</span>`).join(" ")
+        : '<span class="muted tiny">No department</span>';
+    } catch { /* optional */ }
+
     /* record history: who changed what, when */
     try {
       const versions = await api(`/patients/${patientId}/versions`);
@@ -804,6 +822,7 @@ async function loadSettings() {
   api("/health").then(h =>
     $("#settings-facility").textContent =
       `${h.facility} — ${h.patients} patient record(s)`).catch(() => {});
+  initSettingsNav();
   loadBackups();
   loadBin();
   loadCloudBackup();
@@ -1150,9 +1169,84 @@ $("#btn-pair-desktop").addEventListener("click", async () => {
 /* ------------------------------------------------------------------ dialogs */
 
 const dlgPatient = $("#dlg-patient");
+
+/* dashboard shortcut: register a patient without hunting for the section */
+$("#btn-dash-new-patient")?.addEventListener("click", () => {
+  $("#dlg-patient-title").textContent = "New patient";
+  $("#form-patient").reset();
+  pfDeptIds = [];
+  renderPfDepartments();
+  $("#form-patient-error").classList.add("hidden");
+  dlgPatient.showModal();
+});
+
+/* --- age <-> date of birth: fill either one, the other follows --- */
+const pfDob = $("#pf-dob"), pfAge = $("#pf-age");
+pfDob?.addEventListener("change", () => {
+  if (!pfDob.value) return;
+  const dob = new Date(pfDob.value), now = new Date();
+  let age = now.getFullYear() - dob.getFullYear();
+  const m = now.getMonth() - dob.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < dob.getDate())) age--;
+  if (age >= 0 && age < 131) pfAge.value = age;
+});
+pfAge?.addEventListener("change", () => {
+  const age = parseInt(pfAge.value, 10);
+  if (!Number.isFinite(age) || age < 0 || age > 130) return;
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - age);
+  pfDob.value = d.toISOString().slice(0, 10);
+  if (Number.isFinite(age)) pfDob.title =
+    "Approximate — calculated from the age you typed (January 1).";
+});
+
+/* --- departments: tick every one that applies --- */
+let pfDeptIds = [];
+function renderPfDepartments() {
+  const wrap = $("#pf-depts");
+  if (!wrap) return;
+  const list = deptCache.filter(d => d.kind !== "organization");
+  wrap.innerHTML = list.length
+    ? list.map(d => `<label><input type="checkbox" value="${d.id}" ${
+        pfDeptIds.includes(d.id) ? "checked" : ""}> ${esc(d.name)}</label>`).join("")
+    : '<span class="muted tiny">No departments yet — create some in Settings.</span>';
+  wrap.querySelectorAll("input").forEach(cb => cb.addEventListener("change", () => {
+    const id = parseInt(cb.value, 10);
+    if (cb.checked) { if (!pfDeptIds.includes(id)) pfDeptIds.push(id); }
+    else pfDeptIds = pfDeptIds.filter(x => x !== id);
+  }));
+}
+
+/* --- friendly error line: '2 fields need attention: …' --- */
+function showFormError(box, err) {
+  const fields = err.fields || {};
+  const parts = Object.entries(fields).map(([f, msgs]) =>
+    `${labelFor(f)}: ${Array.isArray(msgs) ? msgs[0] : msgs}`);
+  box.textContent = parts.length
+    ? (parts.length === 1 ? parts[0]
+       : `${parts.length} things need attention — ${parts.join(" · ")}`)
+    : (err.message || "Something went wrong.");
+  box.classList.remove("hidden");
+}
+const FIELD_LABELS = {
+  name: "Full name", age: "Age", sex: "Sex", date_of_birth: "Date of birth",
+  phone: "Phone", email: "Email", address: "Address",
+  blood_pressure: "Blood pressure", heart_rate: "Heart rate",
+  weight: "Weight", medical_history: "Medical history",
+  diagnosis: "Diagnosis", notes: "Notes", department_id: "Department",
+  scheduled_at: "Date & time", patient_id: "Patient", reason: "Reason",
+  username: "Username", password: "Password", display_name: "Full name",
+  unit_ids: "Departments", code: "Invite code",
+};
+function labelFor(field) { return FIELD_LABELS[field] || field.replace(/_/g, " "); }
+
+$("#btn-patient-cancel").addEventListener("click", () => dlgPatient.close());
+
 $("#btn-new-patient").addEventListener("click", () => {
   $("#dlg-patient-title").textContent = "New patient";
   $("#form-patient").reset();
+  pfDeptIds = [];
+  renderPfDepartments();
   $("#form-patient-error").classList.add("hidden");
   dlgPatient.showModal();
 });
@@ -1160,23 +1254,38 @@ $("#btn-new-patient").addEventListener("click", () => {
 $("#form-patient").addEventListener("submit", async e => {
   if (e.submitter?.value !== "ok") return;
   e.preventDefault();
-  const data = Object.fromEntries(new FormData(e.target));
+  const form = e.target;
+  const data = Object.fromEntries(new FormData(form));
+  const missing = ["name"].filter(k => !(data[k] || "").trim());
+  if (missing.length) {
+    showFormError($("#form-patient-error"), {
+      fields: Object.fromEntries(missing.map(k => [k, ["is required"]])),
+      message: "missing",
+    });
+    return;
+  }
   try {
     const created = await api("/patients", {
       method: "POST", body: JSON.stringify(data),
     });
+    if (pfDeptIds.length) {
+      try {
+        await api(`/patients/${created.patient_id}/departments`, {
+          method: "PUT", body: JSON.stringify({ unit_ids: pfDeptIds }),
+        });
+      } catch (err) { toast(err.message); }
+    }
     dlgPatient.close();
     toast(`Registered ${created.name} (${created.patient_number})`);
     showView("patients");
     loadPatients();
   } catch (err) {
-    const box = $("#form-patient-error");
-    box.textContent = err.message;
-    box.classList.remove("hidden");
+    showFormError($("#form-patient-error"), err);
   }
 });
 
 const dlgAppt = $("#dlg-appointment");
+$("#btn-appt-cancel").addEventListener("click", () => dlgAppt.close());
 $("#btn-new-appt").addEventListener("click", async () => {
   $("#form-appointment").reset();
   $("#form-appointment-error").classList.add("hidden");
@@ -1192,18 +1301,26 @@ $("#form-appointment").addEventListener("submit", async e => {
   if (e.submitter?.value !== "ok") return;
   e.preventDefault();
   const raw = Object.fromEntries(new FormData(e.target));
+  const missing = [];
+  if (!(raw.patient_id || "").trim()) missing.push("patient_id");
+  if (!(raw.scheduled_at || "").trim()) missing.push("scheduled_at");
+  if (missing.length) {
+    showFormError($("#form-appointment-error"), {
+      fields: Object.fromEntries(missing.map(k => [k, ["is required"]])),
+      message: "missing",
+    });
+    return;
+  }
   try {
     await api(`/appointments?patient_id=${raw.patient_id}`, {
       method: "POST",
       body: JSON.stringify({ ...raw, patient_id: undefined }),
     });
     dlgAppt.close();
-    toast("Appointment scheduled");
+    toast("Appointment booked — the staff member has been notified", "ok");
     loadAppointments();
   } catch (err) {
-    const box = $("#form-appointment-error");
-    box.textContent = err.message;
-    box.classList.remove("hidden");
+    showFormError($("#form-appointment-error"), err);
   }
 });
 
@@ -1250,18 +1367,67 @@ async function loadTempUsers() {
   }
 }
 
-$("#temp-form").addEventListener("submit", async e => {
+let tempPickedIds = [];
+
+/* keep the guest form in plain English: patient picker instead of raw IDs */
+function initTempAccessForm() {
+  const form = $("#temp-form");
+  if (!form) return;
+  const pick = $("#temp-patient-pick");
+  const dur = $("#temp-duration");
+  const customWrap = $("#temp-custom-wrap");
+  if (dur) dur.addEventListener("change", () => {
+    customWrap?.classList.toggle("hidden", dur.value !== "custom");
+  });
+  if (pick) {
+    api("/patients?limit=500").then(rows => {
+      pick.innerHTML = '<option value="">— choose a patient —</option>' +
+        rows.map(p => `<option value="${p.patient_id}">` +
+          `${esc(p.name)} (${esc(p.patient_number || "#" + p.patient_id)})</option>`).join("");
+    }).catch(() => {});
+    pick.addEventListener("change", () => {
+      const id = parseInt(pick.value, 10);
+      const label = pick.options[pick.selectedIndex]?.textContent || "";
+      if (Number.isInteger(id) && id > 0 && !tempPickedIds.some(x => x.id === id)) {
+        tempPickedIds.push({ id, label });
+        renderPicked();
+      }
+      pick.value = "";
+    });
+  }
+}
+
+function renderPicked() {
+  const wrap = $("#temp-picked");
+  if (!wrap) return;
+  wrap.innerHTML = tempPickedIds.map(p =>
+    `<span class="picked-chip">${esc(p.label)}` +
+    `<button type="button" title="Remove" data-id="${p.id}">✕</button></span>`).join("");
+  wrap.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    tempPickedIds = tempPickedIds.filter(x => x.id !== parseInt(b.dataset.id, 10));
+    renderPicked();
+  }));
+}
+
+$("#temp-form")?.addEventListener("submit", async e => {
   e.preventDefault();
   const raw = Object.fromEntries(new FormData(e.target));
-  const ids = raw.patient_ids.split(",").map(s => parseInt(s.trim(), 10))
-    .filter(n => Number.isInteger(n) && n > 0);
+  const hours = raw.hours_preset === "custom"
+    ? parseFloat(raw.hours) : parseFloat(raw.hours_preset);
+  const ids = tempPickedIds.map(p => p.id);
+  if (!ids.length) {
+    toast("Add at least one patient the guest may open.");
+    return;
+  }
   try {
     const created = await api("/temp-users", {
       method: "POST",
-      body: JSON.stringify({ label: raw.label, hours: parseFloat(raw.hours),
-                             patient_ids: ids }),
+      body: JSON.stringify({ label: raw.label, hours, patient_ids: ids }),
     });
     e.target.reset();
+    tempPickedIds = [];
+    renderPicked();
+    $("#temp-custom-wrap")?.classList.add("hidden");
     const box = $("#temp-credential");
     $("#temp-credential-text").textContent =
       `Who: ${created.label}\nUsername: ${created.username}\n` +
@@ -1379,3 +1545,224 @@ function toast(message) {
   const gate = $("#login-gate");
   if (gate) gate.classList.remove("hidden");
 })();
+
+/* ================================================================== bell */
+
+let bellTimer = null;
+
+function initBell() {
+  const btn = $("#btn-bell");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const panel = $("#notif-panel");
+    if (panel.classList.contains("hidden")) {
+      panel.classList.remove("hidden");
+      loadNotifications();
+    } else panel.classList.add("hidden");
+  });
+  document.addEventListener("click", e => {
+    const panel = $("#notif-panel");
+    if (!panel || panel.classList.contains("hidden")) return;
+    if (!panel.contains(e.target) && e.target !== btn &&
+        !btn.contains(e.target)) panel.classList.add("hidden");
+  });
+  $("#btn-notif-all-read")?.addEventListener("click", async () => {
+    try {
+      await api("/notifications/read-all", { method: "POST" });
+      loadNotifications();
+    } catch (err) { toast(err.message); }
+  });
+  refreshUnread();
+  bellTimer = setInterval(refreshUnread, 30000);
+}
+
+async function refreshUnread() {
+  try {
+    const r = await api("/notifications?limit=1");
+    const badge = $("#bell-badge");
+    if (!badge) return;
+    badge.textContent = r.unread > 99 ? "99+" : r.unread || "";
+    badge.classList.toggle("hidden", !r.unread);
+  } catch { /* bell is best-effort */ }
+}
+
+async function loadNotifications() {
+  const list = $("#notif-list");
+  if (!list) return;
+  try {
+    const r = await api("/notifications?limit=50");
+    list.innerHTML = r.items.length
+      ? r.items.map(n => `
+        <div class="notif-item ${n.read ? "" : "unread"}" data-id="${n.notification_id}">
+          <div class="n-title">${esc(n.title)}</div>
+          ${n.body ? `<div class="n-body">${esc(n.body)}</div>` : ""}
+          <div class="n-when">${esc((n.created_at || "").replace("T", " ").slice(0, 16))}
+            · ${n.read ? "read — click to mark unread" : "new — click to mark read"}</div>
+        </div>`).join("")
+      : '<div class="notif-empty">Nothing yet — appointment bookings and account approvals land here.</div>';
+    list.querySelectorAll(".notif-item").forEach(el =>
+      el.addEventListener("click", async () => {
+        const id = parseInt(el.dataset.id, 10);
+        const nowRead = !el.classList.contains("unread");
+        try {
+          await api(`/notifications/${id}/read`, {
+            method: "POST", body: JSON.stringify({ read: nowRead })});
+          loadNotifications();
+          refreshUnread();
+        } catch (err) { toast(err.message); }
+      }));
+    refreshUnread();
+  } catch (err) {
+    list.innerHTML = `<div class="notif-empty">${esc(err.message)}</div>`;
+  }
+}
+
+/* ============================================== settings jump list ===== */
+
+const SETTINGS_SECTIONS = [
+  ["set-facility", "Facility"], ["set-departments", "Departments"],
+  ["set-template", "Record template"], ["set-backups", "Backups"],
+  ["set-cloud", "Off-site cloud copy"], ["set-session", "Session & sign-out"],
+  ["set-bin", "Recycle bin"], ["set-staff", "Staff & colleagues"],
+  ["set-onboarding", "Invites & approvals"], ["set-automation", "Automation rules"],
+];
+
+function initSettingsNav() {
+  const nav = $("#settings-nav");
+  if (!nav) return;
+  nav.innerHTML = SETTINGS_SECTIONS
+    .map(([id, label]) => {
+      const card = document.getElementById(id);
+      return card ? `<a href="#${id}" data-target="${id}">${label}</a>` : "";
+    }).join("");
+  nav.querySelectorAll("a").forEach(a =>
+    a.addEventListener("click", e => {
+      e.preventDefault();
+      document.getElementById(a.dataset.target)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+  const spy = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      const link = nav.querySelector(`a[data-target="${en.target.id}"]`);
+      if (!link) return;
+      if (en.isIntersecting) {
+        nav.querySelectorAll("a").forEach(x => x.classList.remove("here"));
+        link.classList.add("here");
+      }
+    });
+  }, { rootMargin: "-20% 0px -65% 0px", threshold: 0 });
+  SETTINGS_SECTIONS.forEach(([id]) => {
+    const card = document.getElementById(id);
+    if (card) spy.observe(card);
+  });
+}
+
+/* ============================================== invites & approvals === */
+
+$("#invite-form")?.addEventListener("submit", async e => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  try {
+    const inv = await api("/invites", {
+      method: "POST",
+      body: JSON.stringify({
+        role: data.role, label: data.label || undefined,
+        unit_id: data.unit_id ? parseInt(data.unit_id, 10) : undefined,
+        days_valid: parseInt(data.days_valid, 10),
+      }),
+    });
+    const out = $("#invite-code-out");
+    $("#invite-code-text").textContent =
+      `Invite code: ${inv.code}\n` +
+      `They enter this on the sign-up page (${inv.role}, valid until ${inv.expires_at.slice(0, 10)})`;
+    out.classList.remove("hidden");
+    e.target.reset();
+    loadInvites();
+  } catch (err) { toast(err.message); }
+});
+
+async function loadInvites() {
+  try {
+    const invites = await api("/invites");
+    fillTable($("#invites-table"), invites, [
+      ["code", "Code"],
+      ["role", "Role"],
+      ["label", "For"],
+      [null, "Valid until", r => (r.expires_at || "").slice(0, 10)],
+      [null, "Used", r => `${r.used_count}/${r.max_uses}`],
+      [null, "State", r => r.revoked ? "withdrawn"
+        : (r.used_count >= r.max_uses ? "used up"
+           : (r.expires_at <= new Date().toISOString() ? "expired" : "live"))],
+      [null, "", () => ""],
+    ]);
+    $$("#invites-table tbody tr").forEach((tr, i) => {
+      const inv = invites[i];
+      if (inv && !inv.revoked && !tr.querySelector("td[colspan]")) {
+        const cell = tr.lastElementChild;
+        const btn = document.createElement("button");
+        btn.className = "btn ghost";
+        btn.style.padding = "4px 10px";
+        btn.textContent = "Withdraw";
+        btn.addEventListener("click", async () => {
+          try {
+            await api(`/invites/${inv.invite_id}/revoke`, { method: "POST" });
+            loadInvites();
+          } catch (err) { toast(err.message); }
+        });
+        cell.appendChild(btn);
+      }
+    });
+  } catch { /* card hidden for non-admins */ }
+}
+
+async function loadPendingAccounts() {
+  try {
+    const pending = await api("/onboarding/pending");
+    fillTable($("#pending-table"), pending, [
+      ["username", "Username"],
+      ["display_name", "Name"],
+      [null, "Requested", r => (r.created_at || "").slice(0, 10)],
+      [null, "", () => ""],
+    ]);
+    $$("#pending-table tbody tr").forEach((tr, i) => {
+      const u = pending[i];
+      if (u && !tr.querySelector("td[colspan]")) {
+        const cell = tr.lastElementChild;
+        const ok = document.createElement("button");
+        ok.className = "btn primary";
+        ok.style.padding = "4px 10px";
+        ok.textContent = "Approve";
+        ok.addEventListener("click", async () => {
+          try {
+            await api(`/onboarding/${u.user_id}/approve`, {
+              method: "POST", body: JSON.stringify({}) });
+            toast(`${u.display_name} approved — they can sign in now`, "ok");
+            loadPendingAccounts();
+            loadStaff();
+          } catch (err) { toast(err.message); }
+        });
+        const no = document.createElement("button");
+        no.className = "btn danger";
+        no.style.padding = "4px 10px";
+        no.style.marginLeft = "6px";
+        no.textContent = "Decline";
+        no.addEventListener("click", async () => {
+          try {
+            await api(`/onboarding/${u.user_id}/decline`, {
+              method: "POST", body: JSON.stringify({}) });
+            loadPendingAccounts();
+          } catch (err) { toast(err.message); }
+        });
+        cell.appendChild(ok);
+        cell.appendChild(no);
+      }
+    });
+  } catch { /* hidden for non-admins */ }
+}
+
+const origLoadSettings = loadSettings;
+loadSettings = async function() {
+  await origLoadSettings();
+  loadInvites();
+  loadPendingAccounts();
+};

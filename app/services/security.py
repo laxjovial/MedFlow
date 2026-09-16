@@ -194,10 +194,16 @@ class SecurityService:
         )
         return self.users.insert(user), generated
 
+    PENDING_ROLE = "__pending__"
+
     def authenticate(self, username: str, password: str) -> User:
         user = self.users.get_by_username(username)
         if not user or not user.active:
             raise AuthenticationError("Invalid username or password.")
+        if getattr(user, "role", "") == self.PENDING_ROLE:
+            raise AuthenticationError(
+                "Your account is still waiting for an administrator's "
+                "approval — you will be able to sign in once approved.")
         if user.is_expired(to_iso(utcnow())):
             raise AuthenticationError(
                 "This temporary access has expired. Ask the staff member who "

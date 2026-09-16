@@ -278,6 +278,13 @@ class RecordsService:
             "device_id": self.device_id,
         })
         self._history(patient_id, f"Appointment scheduled for {scheduled_at}.")
+        try:
+            from app.services.onboarding import NotificationService
+            patient = self.repos["patients"].get(patient_id)
+            NotificationService(self.repos, actor=self.actor) \
+                .notify_assignment(appt, patient.name)
+        except Exception:
+            pass  # notifications are best-effort; booking must not fail
         return appt
 
     def set_appointment_status(self, appointment_id: int, status: str) -> dict:
