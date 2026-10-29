@@ -469,6 +469,37 @@ class TestBackups:
         assert "pre-restore" in safety.name
         assert populated.audit.recent()[0].action == AuditAction.RESTORE_BACKUP.value
 
+    def test_restore_is_repeatable_and_preserves_the_source_snapshot(
+        self, populated: Container, sample_patient_data
+    ) -> None:
+        snapshot = populated.backups.create_backup(actor=ACTOR, label="recovery-point")
+        populated.patients.create(
+            {**sample_patient_data, "first_name": "Grace", "last_name": "Hopper"},
+            actor=ACTOR,
+        )
+        assert populated.patients.count() == 3
+
+        populated.backups.restore_backup(snapshot.path, actor=ACTOR)
+        assert snapshot.path.is_file()
+        assert populated.patients.count() == 2
+
+        # A second restore from the same artifact must be possible and stable.
+        populated.backups.restore_backup(snapshot.path, actor=ACTOR)
+        assert snapshot.path.is_file()
+        assert populated.patients.count() == 2
+
+    def test_corrupt_backup_is_rejected_without_changing_live_records(
+        self, populated: Container, tmp_path: Path
+    ) -> None:
+        from app.core.exceptions import BackupError
+
+        corrupt = tmp_path / "corrupt.db"
+        corrupt.write_bytes(b"not a SQLite database")
+        with pytest.raises(BackupError, match="integrity|verify"):
+            populated.backups.restore_backup(corrupt, actor=ACTOR)
+
+        assert populated.patients.count() == 2
+
     def test_restoring_a_missing_backup_is_reported(
         self, populated: Container, tmp_path: Path
     ) -> None:

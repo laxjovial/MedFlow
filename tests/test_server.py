@@ -112,3 +112,85 @@ def test_index_page_served(client):
     response = client.get("/")
     assert response.status_code == 200
     assert "MedFlow" in response.text
+
+
+def test_public_health_exposes_only_liveness(client):
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_system_metrics_requires_authentication(client):
+    response = client.get("/api/system/metrics")
+    assert response.status_code == 401
+
+
+def test_system_metrics_requires_reports_permission(client, repos):
+    from app.services.security import SecurityService
+
+    viewer = SecurityService(repos["users"]).create_user(
+        "viewer", "Viewer User", "password123", "viewer"
+    )
+    response = client.post(
+        "/api/auth/login",
+        json={"username": viewer.username, "password": "password123"},
+    )
+    assert response.status_code == 200
+    token = response.json()["token"]
+    metrics = client.get(
+        "/api/system/metrics",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert metrics.status_code == 403
+
+
+def test_system_metrics_returns_counts_to_authorized_user(client, auth, patient):
+    response = client.get("/api/system/metrics", headers=auth)
+    assert response.status_code == 200
+    assert "facility" in response.json()
+    assert response.json()["patients"] >= 1
+
+
+def test_login_rate_limit_returns_429_and_retry_after(client):
+    for _ in range(5):
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "incorrect"},
+        )
+        assert response.status_code == 401
+    limited = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "incorrect"},
+    )
+    assert limited.status_code == 429
+    assert int(limited.headers["Retry-After"]) >= 1
+
+
+def test_signup_rate_limit_returns_429(client):
+    for i in range(5):
+        response = client.post(
+            "/api/auth/signup",
+            json={"username": f"signup-{i}", "display_name": "Signup User",
+                  "password": "a-long-enough-password"},
+        )
+        assert response.status_code == 201
+    limited = client.post(
+        "/api/auth/signup",
+        json={"username": "signup-extra", "display_name": "Signup User",
+              "password": "a-long-enough-password"},
+    )
+    assert limited.status_code == 429
+
+
+def test_pairing_redeem_rate_limit_returns_429(client):
+    for _ in range(5):
+        response = client.post(
+            "/api/pairing/redeem",
+            json={"code": "invalid-code", "device_id": "test-device"},
+        )
+        assert response.status_code == 401
+    limited = client.post(
+        "/api/pairing/redeem",
+        json={"code": "invalid-code", "device_id": "test-device"},
+    )
+    assert limited.status_code == 429

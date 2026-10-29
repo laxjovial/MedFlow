@@ -100,8 +100,11 @@ class SyncEngine:
             if (remote.updated_at or "") > (local.updated_at or ""):
                 conflicts = self._detect_conflicts(local, remote)
                 if conflicts and local.device_id == self.device_id:
-                    # I changed it here after their change: keep both, flag it
+                    # We do not have a persisted common-base snapshot for a safe
+                    # field-level merge. Preserve the local record and surface the
+                    # conflict instead of overwriting potentially newer clinical data.
                     report.conflicts.extend(conflicts)
+                    continue
                 self.repos["patients"].upsert_from_remote(remote)
                 report.pulled += 1
             elif (remote.updated_at or "") == (local.updated_at or ""):

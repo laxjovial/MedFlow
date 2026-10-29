@@ -30,6 +30,7 @@ from app.server.deps import (
     require,
 )
 from app.server.pairing import PairingError, pairing
+from app.server.rate_limit import SlidingWindowRateLimiter
 from app.server import sessions as sessions_policy
 from app.server.tokens import issue
 from app.services.offsite import (
@@ -292,6 +293,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
     app.state.db = db
     app.state.repos = repos
     app.state.google_client_id = google_client_id
+    # Process-local protection for single-instance deployments. Multi-worker deployments
+    # must use a shared limiter at the gateway or a shared backing store.
+    app.state.auth_rate_limiter = SlidingWindowRateLimiter()
     from app.services.reports import ReportsService
     app.state.report_service = ReportsService(repos) if repos else None
     # Automation rules live for the server's lifetime (same as a desktop
@@ -302,10 +306,31 @@ def create_app(config: Config | None = None, db=None, repos=None,
 
     app.add_exception_handler(MedFlowError, error_handler)
 
+    def _limit_auth(request: Request, scope: str, limit: int, window_seconds: int = 60,
+                    identity: str | None = None) -> None:
+        client_host = request.client.host if request.client else "unknown"
+        keys = [f"{scope}:ip:{client_host}"]
+        if identity:
+            keys.append(f"{scope}:identity:{identity}")
+        retry_after = None
+        for key in keys:
+            wait = request.app.state.auth_rate_limiter.consume(
+                key, limit=limit, window_seconds=window_seconds
+            )
+            if wait is not None:
+                retry_after = max(retry_after or 0, wait)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many attempts. Please wait before trying again.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
     # --------------------------------------------------------------- auth
 
     @app.post("/api/auth/login", tags=["auth"])
     def login(body: LoginRequest, request: Request):
+        _limit_auth(request, "login", limit=5, identity=body.username.strip().casefold())
         users = request.app.state.repos["users"]
         from app.services.security import SecurityService
         security = SecurityService(users)
@@ -342,6 +367,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
         after that signs up as a viewer pending staff promotion. Temporarily
         closable via config for private deployments.
         """
+        _limit_auth(request, "signup", limit=5)
         cfg = request.app.state.config
         from app.services.onboarding import PENDING_ROLE
         if body.invite_code:
@@ -392,6 +418,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
     @app.post("/api/auth/google", tags=["auth"])
     def google_login(body: GoogleLoginRequest, request: Request = None):
         """Verify a Google ID token and sign in (or provision) the user."""
+        _limit_auth(request, "google-login", limit=5)
         if not request.app.state.google_client_id:
             raise HTTPException(status_code=501, detail="Google sign-in not configured")
         from app.server.google import verify_google_token
@@ -420,6 +447,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
     @app.post("/api/pairing/code", status_code=201, tags=["auth"])
     def pairing_code(body: PairingStart, user=Depends(current_user),
                      request: Request = None):
+        _limit_auth(request, "pairing-create", limit=5, identity=str(user["sub"]))
         """Create a one-time code so the desktop app can pair with this server.
 
         The signed-in user runs the desktop app, types this code there, and the
@@ -454,6 +482,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
     @app.post("/api/pairing/redeem", tags=["auth"])
     def pairing_redeem(body: PairingRedeem, request: Request = None):
         """Exchange a one-time pairing code for a session (desktop side)."""
+        _limit_auth(request, "pairing-redeem", limit=5)
         try:
             identity = pairing.redeem_code(body.code)
         except PairingError as exc:
@@ -1440,10 +1469,16 @@ def create_app(config: Config | None = None, db=None, repos=None,
     # ------------------------------------------------------------- system
 
     @app.get("/api/health", tags=["system"])
-    def health(request: Request = None):
+    def health():
+        """Minimal public liveness check; disclose no facility or patient data."""
+        return {"ok": True}
+
+    @app.get("/api/system/metrics", tags=["system"])
+    def system_metrics(user=Depends(current_user), request: Request = None):
+        """Operational counts for authorized staff only."""
+        require(user, "reports.view")
         repos = request.app.state.repos
         return {
-            "ok": True,
             "facility": request.app.state.config.facility_name
             if request.app.state.config else "MedFlow",
             "patients": repos["patients"].count(),
