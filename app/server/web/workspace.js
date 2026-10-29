@@ -823,9 +823,12 @@ $$("#export-row [data-export]").forEach(btn =>
 /* ------------------------------------------------------------------ settings */
 
 async function loadSettings() {
-  api("/health").then(h =>
-    $("#settings-facility").textContent =
-      `${h.facility} — ${h.patients} patient record(s)`).catch(() => {});
+  // Facility counts are operational metrics and require the existing permission.
+  if (new Set(state.user.permissions || []).has("reports.view")) {
+    api("/system/metrics").then(metrics =>
+      $("#settings-facility").textContent =
+        `${metrics.facility} — ${metrics.patients} patient record(s)`).catch(() => {});
+  }
   initSettingsNav();
   loadBackups();
   loadBin();
