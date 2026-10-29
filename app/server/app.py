@@ -309,10 +309,16 @@ def create_app(config: Config | None = None, db=None, repos=None,
     def _limit_auth(request: Request, scope: str, limit: int, window_seconds: int = 60,
                     identity: str | None = None) -> None:
         client_host = request.client.host if request.client else "unknown"
-        key = f"{scope}:{client_host}:{identity or '-'}"
-        retry_after = request.app.state.auth_rate_limiter.consume(
-            key, limit=limit, window_seconds=window_seconds
-        )
+        keys = [f"{scope}:ip:{client_host}"]
+        if identity:
+            keys.append(f"{scope}:identity:{identity}")
+        retry_after = None
+        for key in keys:
+            wait = request.app.state.auth_rate_limiter.consume(
+                key, limit=limit, window_seconds=window_seconds
+            )
+            if wait is not None:
+                retry_after = max(retry_after or 0, wait)
         if retry_after is not None:
             raise HTTPException(
                 status_code=429,
