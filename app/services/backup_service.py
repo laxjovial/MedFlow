@@ -12,6 +12,9 @@ first. That way "restore the wrong backup" is itself recoverable.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shutil
+import sqlite3
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -132,15 +135,43 @@ class BackupService:
         if not source.is_file():
             raise BackupError(f"No backup found at {source}")
 
+        # Validate the snapshot before creating more files or changing live data.
+        try:
+            with sqlite3.connect(str(source)) as check:
+                result = check.execute("PRAGMA integrity_check").fetchone()[0]
+        except sqlite3.Error as exc:
+            raise BackupError(f"Could not verify backup integrity: {exc}") from exc
+        if result != "ok":
+            raise BackupError(f"Backup is corrupt: {result}")
+
         # Take a safety copy before overwriting anything.
         safety = self.create_backup(actor=actor, label="pre-restore")
+        destination = self._settings.database_path
+        temporary_path: Path | None = None
 
         try:
             self._database.close()
-            source.replace(self._settings.database_path)
-            _remove_stale_journal_files(self._settings.database_path)
+            # Keep the source snapshot reusable. Moving it into place made a
+            # second restore impossible and removed the recovery artifact.
+            with tempfile.NamedTemporaryFile(
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".restore.tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+            shutil.copy2(source, temporary_path)
+            temporary_path.replace(destination)
+            temporary_path = None
+            _remove_stale_journal_files(destination)
         except OSError as exc:
             raise BackupError(f"Could not restore the backup: {exc}") from exc
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove incomplete restore file %s", temporary_path)
 
         self._audit.record(
             AuditAction.RESTORE_BACKUP,
