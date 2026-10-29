@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
+from app.utils.dates import to_iso, utcnow
 from app.models import Patient, Vitals
 from app.models.patient import format_patient_number
 
@@ -80,7 +83,7 @@ def test_appointment_lifecycle(repos, patient):
     appts = repos["appointments"]
     appt = appts.insert({
         "patient_id": patient.patient_id,
-        "scheduled_at": "2026-09-20T10:30",
+        "scheduled_at": to_iso(utcnow() + timedelta(days=1)),
         "status": "scheduled",
     })
     assert appts.upcoming()[0]["appointment_id"] == appt["appointment_id"]
