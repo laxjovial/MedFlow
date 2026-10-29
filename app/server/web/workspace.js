@@ -203,7 +203,7 @@ async function loadDepartments() {
       const cur = inviteUnit.value;
       inviteUnit.innerHTML = '<option value="">No department</option>' +
         deptCache.filter(d => d.kind !== "organization")
-          .map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+          .map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
       if ([...inviteUnit.options].some(o => o.value === cur)) inviteUnit.value = cur;
     }
     const table = $("#departments-table");
@@ -380,7 +380,7 @@ function renderChartTemplate(sections) {
         input.dataset.templateId = f.template_id;
         input.innerHTML = '<option value="">—</option>' +
           f.choices.split(",").map(c => c.trim()).filter(Boolean)
-            .map(c => `<option ${f.value === c ? "selected" : ""}>${esc(c)}</option>`).join("");
+            .map(c => `<option value="${esc(c)}" ${f.value === c ? "selected" : ""}>${esc(c)}</option>`).join("");
       } else if (f.value_type === "date") {
         input = document.createElement("input");
         input.type = "date";
@@ -507,7 +507,7 @@ async function loadDirectory() {
     const current = sel.value;
     sel.innerHTML = '<option value="">Whole facility</option>' +
       deptCache.map(d => d.kind === "organization"
-        ? "" : `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+        ? "" : `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
     if ([...sel.options].some(o => o.value === current)) sel.value = current;
     const roster = await api(
       `/patients/by-department${sel.value ? `?department_id=${sel.value}` : ""}`);
@@ -1029,7 +1029,7 @@ async function loadStaff() {
       const cur = unitSel.value;
       unitSel.innerHTML = '<option value="">No department</option>' +
         deptCache.filter(d => d.kind !== "organization")
-          .map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+          .map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
       if ([...unitSel.options].some(o => o.value === cur)) unitSel.value = cur;
     }
     $$("#staff-table tbody tr").forEach((tr, i) => {
@@ -1382,7 +1382,7 @@ function initTempAccessForm() {
   if (pick) {
     api("/patients?limit=500").then(rows => {
       pick.innerHTML = '<option value="">— choose a patient —</option>' +
-        rows.map(p => `<option value="${p.patient_id}">` +
+        rows.map(p => `<option value="${esc(p.patient_id)}">` +
           `${esc(p.name)} (${esc(p.patient_number || "#" + p.patient_id)})</option>`).join("");
     }).catch(() => {});
     pick.addEventListener("change", () => {
@@ -1402,7 +1402,7 @@ function renderPicked() {
   if (!wrap) return;
   wrap.innerHTML = tempPickedIds.map(p =>
     `<span class="picked-chip">${esc(p.label)}` +
-    `<button type="button" title="Remove" data-id="${p.id}">✕</button></span>`).join("");
+    `<button type="button" title="Remove" data-id="${esc(p.id)}">✕</button></span>`).join("");
   wrap.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
     tempPickedIds = tempPickedIds.filter(x => x.id !== parseInt(b.dataset.id, 10));
     renderPicked();
@@ -1460,10 +1460,10 @@ function fillTable(table, rows, columns, opts = {}) {
   thead.innerHTML = "";
   tbody.innerHTML = "";
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="${columns.length}" class="muted">Nothing here yet</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${esc(columns.length)}" class="muted">Nothing here yet</td></tr>`;
     return;
   }
-  thead.innerHTML = `<tr>${columns.map(c => `<th>${c[1]}</th>`).join("")}</tr>`;
+  thead.innerHTML = `<tr>${columns.map(c => `<th>${esc(c[1])}</th>`).join("")}</tr>`;
   for (const row of rows) {
     const tr = document.createElement("tr");
     tr.innerHTML = columns.map(c => {
@@ -1593,7 +1593,7 @@ async function loadNotifications() {
     const r = await api("/notifications?limit=50");
     list.innerHTML = r.items.length
       ? r.items.map(n => `
-        <div class="notif-item ${n.read ? "" : "unread"}" data-id="${n.notification_id}">
+        <div class="notif-item ${n.read ? "" : "unread"}" data-id="${esc(n.notification_id)}">
           <div class="n-title">${esc(n.title)}</div>
           ${n.body ? `<div class="n-body">${esc(n.body)}</div>` : ""}
           <div class="n-when">${esc((n.created_at || "").replace("T", " ").slice(0, 16))}
@@ -1633,7 +1633,7 @@ function initSettingsNav() {
   nav.innerHTML = SETTINGS_SECTIONS
     .map(([id, label]) => {
       const card = document.getElementById(id);
-      return card ? `<a href="#${id}" data-target="${id}">${label}</a>` : "";
+      return card ? `<a href="#${esc(id)}" data-target="${esc(id)}">${esc(label)}</a>` : "";
     }).join("");
   nav.querySelectorAll("a").forEach(a =>
     a.addEventListener("click", e => {
