@@ -104,8 +104,12 @@ function enterApp() {
   initBell();
   initSettingsNav();
   initTempAccessForm();
-  api("/health").then(h =>
-    $("#facility-label").textContent = `— ${h.facility}`).catch(() => {});
+  // Facility metadata is no longer public on /api/health. Only ask for
+  // operational metrics when this user has the existing reports permission.
+  if (perms.has("reports.view")) {
+    api("/system/metrics").then(metrics =>
+      $("#facility-label").textContent = `— ${metrics.facility}`).catch(() => {});
+  }
 }
 
 /* ------------------------------------------------------------------ nav */
@@ -485,11 +489,11 @@ $("#btn-import-run").addEventListener("click", async () => {
     const rep = $("#import-report");
     rep.classList.remove("hidden");
     rep.innerHTML =
-      `<p class="ok">Imported ${report.created} of ${report.total} record(s).</p>` +
+      `<p class="ok">Imported ${esc(report.created)} of ${esc(report.total)} record(s).</p>` +
       (report.failed.length
-        ? `<p class="warn-text">${report.failed.length} row(s) need attention:</p><ul class="plain-list">` +
+        ? `<p class="warn-text">${esc(report.failed.length)} row(s) need attention:</p><ul class="plain-list">` +
           report.failed.map(f =>
-            `<li>Row ${f.row}${f.name ? ` (${esc(f.name)})` : ""}: ${esc(f.error)}</li>`).join("") +
+            `<li>Row ${esc(f.row)}${f.name ? ` (${esc(f.name)})` : ""}: ${esc(f.error)}</li>`).join("") +
           "</ul>"
         : "");
     loadPatients();
@@ -581,7 +585,7 @@ async function openChart(patientId) {
         <h2>${esc(chart.patient.name)}</h2>
         <span class="pnum">${esc(chart.patient.patient_number)}</span>
         <span class="tag">${esc(chart.patient.sex || "sex n/a")}</span>
-        ${chart.patient.age != null ? `<span class="tag">${chart.patient.age}y</span>` : ""}
+        ${chart.patient.age != null ? `<span class="tag">${esc(chart.patient.age)}y</span>` : ""}
         ${chart.patient.origin_unit_id && deptName(chart.patient.origin_unit_id) ? `<span class="tag">${esc(deptName(chart.patient.origin_unit_id))}</span>` : ""}
         ${chart.patient.blood_pressure ? `<span class="tag warn">BP ${esc(chart.patient.blood_pressure)}</span>` : ""}
       </div>
@@ -1491,8 +1495,14 @@ function renderList(sel, items, render) {
 }
 
 function esc(value) {
+  // Escape text nodes and quoted HTML attributes. Escape ampersands first so
+  // the entities introduced below are not double-escaped.
   return String(value ?? "")
-    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function fmtDT(value) {
