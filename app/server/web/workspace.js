@@ -709,7 +709,7 @@ async function loadAppointments() {
       const myAppts = await api(`/appointments?scope=upcoming&provider=${encodeURIComponent(me)}`);
       if (myAppts.length) {
         const next = myAppts[0];
-        mine.innerHTML = `<strong>${myAppts.length}</strong> upcoming appointment(s) booked for you — ` +
+        mine.innerHTML = `<strong>${esc(myAppts.length)}</strong> upcoming appointment(s) booked for you — ` +
           `next: ${esc(next.patient_name)} at ${fmtDT(next.scheduled_at)}.`;
         mine.classList.remove("hidden");
       } else {
@@ -1211,7 +1211,7 @@ function renderPfDepartments() {
   if (!wrap) return;
   const list = deptCache.filter(d => d.kind !== "organization");
   wrap.innerHTML = list.length
-    ? list.map(d => `<label><input type="checkbox" value="${d.id}" ${
+    ? list.map(d => `<label><input type="checkbox" value="${esc(d.id)}" ${
         pfDeptIds.includes(d.id) ? "checked" : ""}> ${esc(d.name)}</label>`).join("")
     : '<span class="muted tiny">No departments yet — create some in Settings.</span>';
   wrap.querySelectorAll("input").forEach(cb => cb.addEventListener("change", () => {
