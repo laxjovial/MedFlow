@@ -104,8 +104,12 @@ function enterApp() {
   initBell();
   initSettingsNav();
   initTempAccessForm();
-  api("/health").then(h =>
-    $("#facility-label").textContent = `— ${h.facility}`).catch(() => {});
+  // Facility metadata is no longer public on /api/health. Only ask for
+  // operational metrics when this user has the existing reports permission.
+  if (perms.has("reports.view")) {
+    api("/system/metrics").then(metrics =>
+      $("#facility-label").textContent = `— ${metrics.facility}`).catch(() => {});
+  }
 }
 
 /* ------------------------------------------------------------------ nav */
@@ -1491,8 +1495,14 @@ function renderList(sel, items, render) {
 }
 
 function esc(value) {
+  // Escape text nodes and quoted HTML attributes. Escape ampersands first so
+  // the entities introduced below are not double-escaped.
   return String(value ?? "")
-    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function fmtDT(value) {
