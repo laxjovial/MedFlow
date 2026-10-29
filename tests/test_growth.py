@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import timedelta
 
 import pytest
+
+from app.utils.dates import to_iso, utcnow
 
 from app.services.offsite import (
     OffsiteError,
@@ -313,10 +316,10 @@ def test_provider_scoping_and_lists(client, auth):
     pid = client.post("/api/patients", headers=auth,
                       json={"name": "Appt Patient"}).json()["patient_id"]
     client.post(f"/api/appointments?patient_id={pid}", headers=auth,
-                json={"scheduled_at": "2026-09-20T09:00",
+                json={"scheduled_at": to_iso(utcnow() + timedelta(days=1)),
                       "provider": "Dr. Bello", "reason": "follow-up"})
     client.post(f"/api/appointments?patient_id={pid}", headers=auth,
-                json={"scheduled_at": "2026-09-21T10:00",
+                json={"scheduled_at": to_iso(utcnow() + timedelta(days=2)),
                       "provider": "Dr. Ade", "reason": "review"})
 
     bello = client.get("/api/appointments?scope=upcoming&provider=Dr.%20Bello",
@@ -335,7 +338,7 @@ def test_analytics_endpoint(client, auth):
     client.post(f"/api/patients/{pid}/diagnoses", headers=auth,
                 json={"description": "Hypertension"})
     client.post(f"/api/appointments?patient_id={pid}", headers=auth,
-                json={"scheduled_at": "2026-09-20T09:00",
+                json={"scheduled_at": to_iso(utcnow() + timedelta(days=1)),
                       "provider": "Dr. Bello"})
     r = client.get("/api/analytics", headers=auth)
     assert r.status_code == 200
