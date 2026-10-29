@@ -361,13 +361,13 @@ def create_app(config: Config | None = None, db=None, repos=None,
 
     @app.post("/api/auth/signup", status_code=201, tags=["auth"])
     def signup(body: SignupRequest, request: Request = None):
-        _limit_auth(request, "signup", limit=5)
         """Open self-service registration.
 
         The first account ever created becomes the administrator; everyone
         after that signs up as a viewer pending staff promotion. Temporarily
         closable via config for private deployments.
         """
+        _limit_auth(request, "signup", limit=5)
         cfg = request.app.state.config
         from app.services.onboarding import PENDING_ROLE
         if body.invite_code:
