@@ -316,10 +316,10 @@ def test_provider_scoping_and_lists(client, auth):
     pid = client.post("/api/patients", headers=auth,
                       json={"name": "Appt Patient"}).json()["patient_id"]
     client.post(f"/api/appointments?patient_id={pid}", headers=auth,
-                json={"scheduled_at": to_iso(utcnow() + timedelta(days=1)),
+                json={"scheduled_at": (utcnow() + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M"),
                       "provider": "Dr. Bello", "reason": "follow-up"})
     client.post(f"/api/appointments?patient_id={pid}", headers=auth,
-                json={"scheduled_at": to_iso(utcnow() + timedelta(days=2)),
+                json={"scheduled_at": (utcnow() + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M"),
                       "provider": "Dr. Ade", "reason": "review"})
 
     bello = client.get("/api/appointments?scope=upcoming&provider=Dr.%20Bello",
