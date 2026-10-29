@@ -418,6 +418,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
     @app.post("/api/auth/google", tags=["auth"])
     def google_login(body: GoogleLoginRequest, request: Request = None):
         """Verify a Google ID token and sign in (or provision) the user."""
+        _limit_auth(request, "google-login", limit=5)
         if not request.app.state.google_client_id:
             raise HTTPException(status_code=501, detail="Google sign-in not configured")
         from app.server.google import verify_google_token
