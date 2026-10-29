@@ -35,21 +35,21 @@ F_STAT = (FONT, 30, "bold")
 class Palette:
     """Named colors used by the modular desktop shell and dialogs."""
 
-    window: str = "#F7FAFC"
-    sidebar: str = "#F0F5F7"
-    surface: str = "#FFFFFF"
-    surface_alt: str = "#EEF4F6"
-    border: str = LINE
-    text: str = INK
-    text_muted: str = MUTED
-    text_inverse: str = "#FFFFFF"
-    accent: str = ACCENT
-    accent_soft: str = ACCENT_SOFT
-    accent_hover: str = ACCENT_DARK
-    danger: str = DANGER
-    danger_hover: str = "#8F1D16"
-    warning: str = WARNING
-    success: str = OK
+    window: tuple[str, str] = ("#F7FAFC", "#111827")
+    sidebar: tuple[str, str] = ("#F0F5F7", "#17212B")
+    surface: tuple[str, str] = ("#FFFFFF", "#1F2937")
+    surface_alt: tuple[str, str] = ("#EEF4F6", "#273548")
+    border: tuple[str, str] = (LINE, "#374151")
+    text: tuple[str, str] = (INK, "#F3F4F6")
+    text_muted: tuple[str, str] = (MUTED, "#A7B4C2")
+    text_inverse: tuple[str, str] = ("#FFFFFF", "#FFFFFF")
+    accent: tuple[str, str] = (ACCENT, "#2DD4BF")
+    accent_soft: tuple[str, str] = (ACCENT_SOFT, "#123B3A")
+    accent_hover: tuple[str, str] = (ACCENT_DARK, "#0F766E")
+    danger: tuple[str, str] = (DANGER, "#F87171")
+    danger_hover: tuple[str, str] = ("#8F1D16", "#991B1B")
+    warning: tuple[str, str] = (WARNING, "#FBBF24")
+    success: tuple[str, str] = (OK, "#34D399")
 
 
 # Compatibility contract for the older UI modules. Keep aliases explicit so
