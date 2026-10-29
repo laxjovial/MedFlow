@@ -1,10 +1,31 @@
 # MedFlow Architecture
 
+## Supported application entry point
+
+The supported launcher is the repository-root `main.py`:
+
+- `python main.py` starts the current desktop runtime through `app.controller.AppController`.
+- `python main.py --server` starts the FastAPI/web runtime through `app.server`.
+
+The older `app/main.py` module bootstraps the earlier `Container` + `app.ui.app`
+architecture. It is **legacy compatibility code, not a second supported launcher**.
+Do not use it as the canonical runtime. It remains in the tree temporarily because
+legacy UI modules and import-level tests still exercise that path; it should only be
+removed after those dependencies and tests have been deliberately migrated. The
+theme's descriptive token aliases are a compatibility bridge, not a commitment to
+maintain two independent design systems.
+
+The current runtime's actual composition root is `app/controller.py` for the desktop
+session and `app/server` for the server process. The sections below describe the
+earlier modular repository architecture and are historical context where they differ
+from those runtime paths; keep this document aligned with code as migrations proceed.
+
 ## The one rule
 
 > The user interface never talks to storage. Services never know how storage works.
 
 Everything below exists to enforce that sentence.
+
 
 ## Layers
 
