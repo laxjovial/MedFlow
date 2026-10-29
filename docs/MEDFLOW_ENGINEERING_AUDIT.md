@@ -185,3 +185,13 @@ These are useful controls, but no security control should be marked fully verifi
 ## 8. Review limitations
 
 This report is a baseline source inspection, not a penetration test, clinical safety assessment, regulatory certification, or test-run report. It does not prove that an attack is exploitable, nor that an unmentioned risk is absent. The next pass must execute tests and inspect each critical route/service/UI path with stable file/line evidence.
+
+
+### MF-11 — Version metadata is inconsistent
+**Priority: Medium — release and support risk**
+
+Evidence: `pyproject.toml` declares version `2.0.0`, while `app/__init__.py` declares `__version__ = "3.0.0"`. The repository's previous release notes/tags also need to be reconciled with these values before packaging.
+
+Risk: bug reports, built artifacts, package metadata and in-app diagnostics may identify different versions, making it harder to determine which code a clinic is running.
+
+Required next action: choose one authoritative version source, wire packaging/build metadata to it where practical, and add a release check that fails when published version identifiers disagree.
