@@ -127,7 +127,35 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
             "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_active "
             "ON auth_sessions(user_id, revoked_at, expires_at)"
         ),
-    )),
+    )),,
+    # v6 -> v7: durable, idempotent sync conflict review queue.
+    (7, lambda conn: (
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_conflicts (
+                conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint TEXT NOT NULL UNIQUE,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                local_version INTEGER NOT NULL,
+                remote_version INTEGER NOT NULL,
+                local_snapshot TEXT NOT NULL,
+                remote_snapshot TEXT NOT NULL,
+                conflicting_fields TEXT NOT NULL,
+                source_device_id TEXT,
+                detected_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'resolved', 'rejected')),
+                resolved_by TEXT,
+                resolved_at TEXT,
+                resolution_choice TEXT,
+                resolution_snapshot TEXT
+            )
+        """),
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status_detected "
+            "ON sync_conflicts(status, detected_at)"
+        ),
+    ))
 ]
 
 
