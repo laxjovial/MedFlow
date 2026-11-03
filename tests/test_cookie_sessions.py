@@ -12,7 +12,7 @@ def _browser_login(client, username="admin", password="password123"):
     response = client.post(
         "/api/auth/login",
         headers=WEB,
-        json={"username": "admin", "password": "password123", "remember": False},
+        json={"username": username, "password": password, "remember": False},
     )
     assert response.status_code == 200, response.text
     return response
@@ -173,14 +173,16 @@ def test_refresh_revokes_the_previous_cookie_token(client):
     new_token = client.cookies.get("medflow_session")
     assert new_token != old_token
 
-    client.cookies.set("medflow_session", old_token)
-    client.cookies.set("medflow_csrf", old_csrf)
-    replay = client.get("/api/patients", headers={"X-MedFlow-Web-Session": "1"})
+    # Replay through the bearer contract so the test exercises the token's
+    # jti registry directly, without relying on cookie-jar replacement rules.
+    replay = client.get(
+        "/api/patients", headers={"Authorization": f"Bearer {old_token}"}
+    )
     assert replay.status_code == 401
 
-    client.cookies.set("medflow_session", new_token)
-    client.cookies.set("medflow_csrf", _csrf(client))
-    accepted = client.get("/api/patients", headers={"X-MedFlow-Web-Session": "1"})
+    accepted = client.get(
+        "/api/patients", headers={"Authorization": f"Bearer {new_token}"}
+    )
     assert accepted.status_code == 200
 
 
