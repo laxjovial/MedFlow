@@ -53,6 +53,73 @@ def _migrate_sync_change_log(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_sync_hardening(conn: sqlite3.Connection) -> None:
+    """Add immutable revision snapshots, device-bound sessions and batch receipts."""
+    session_cols = {row[1] for row in conn.execute("PRAGMA table_info(auth_sessions)")}
+    if "device_id" not in session_cols:
+        conn.execute("ALTER TABLE auth_sessions ADD COLUMN device_id TEXT")
+    log_cols = {row[1] for row in conn.execute("PRAGMA table_info(sync_change_log)")}
+    if "snapshot" not in log_cols:
+        conn.execute("ALTER TABLE sync_change_log ADD COLUMN snapshot TEXT")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sync_batches (
+            device_id TEXT NOT NULL,
+            batch_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            response_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(device_id, batch_id)
+        )
+    """)
+    conn.execute("DROP TRIGGER IF EXISTS trg_patients_sync_insert")
+    conn.execute("DROP TRIGGER IF EXISTS trg_patients_sync_update")
+    snapshot = """json_object(
+        'patient_id', NEW.patient_id, 'patient_number', NEW.patient_number,
+        'name', NEW.name, 'age', NEW.age, 'sex', NEW.sex,
+        'date_of_birth', NEW.date_of_birth, 'phone', NEW.phone,
+        'email', NEW.email, 'address', NEW.address,
+        'blood_pressure', NEW.blood_pressure, 'heart_rate', NEW.heart_rate,
+        'weight', NEW.weight, 'medical_history', NEW.medical_history,
+        'diagnosis', NEW.diagnosis, 'notes', NEW.notes,
+        'version', NEW.version, 'created_at', NEW.created_at,
+        'updated_at', NEW.updated_at, 'created_by', NEW.created_by,
+        'updated_by', NEW.updated_by, 'device_id', NEW.device_id,
+        'origin_unit_id', NEW.origin_unit_id, 'deleted', NEW.deleted,
+        'change_id', NEW.change_id
+    )"""
+    for operation in ("INSERT", "UPDATE"):
+        suffix = "insert" if operation == "INSERT" else "update"
+        conn.execute(f"""
+            CREATE TRIGGER trg_patients_sync_{suffix}
+            AFTER {operation} ON patients BEGIN
+                INSERT INTO sync_change_log
+                    (patient_id, version, device_id, changed_at, snapshot)
+                VALUES (NEW.patient_id, NEW.version, NEW.device_id,
+                        NEW.updated_at, {snapshot});
+            END
+        """)
+    conn.execute("""
+        UPDATE sync_change_log
+        SET snapshot = (
+            SELECT json_object(
+                'patient_id', p.patient_id, 'patient_number', p.patient_number,
+                'name', p.name, 'age', p.age, 'sex', p.sex,
+                'date_of_birth', p.date_of_birth, 'phone', p.phone,
+                'email', p.email, 'address', p.address,
+                'blood_pressure', p.blood_pressure, 'heart_rate', p.heart_rate,
+                'weight', p.weight, 'medical_history', p.medical_history,
+                'diagnosis', p.diagnosis, 'notes', p.notes,
+                'version', p.version, 'created_at', p.created_at,
+                'updated_at', p.updated_at, 'created_by', p.created_by,
+                'updated_by', p.updated_by, 'device_id', p.device_id,
+                'origin_unit_id', p.origin_unit_id, 'deleted', p.deleted,
+                'change_id', p.change_id
+            ) FROM patients p WHERE p.patient_id = sync_change_log.patient_id
+        )
+        WHERE snapshot IS NULL
+    """)
+
+
 # Future migrations append here: (target_version, callable(conn)).
 # Each entry must bring the database from target_version - 1 to target_version.
 MIGRATIONS: list[tuple[int, "callable"]] = [
@@ -195,7 +262,9 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
         ),
     )),
     # v7 -> v8: monotonic patient change sequence for incremental sync.
-    (8, _migrate_sync_change_log)
+    (8, _migrate_sync_change_log),
+    # v8 -> v9: immutable patient snapshots, device-bound sessions and batch receipts.
+    (9, _migrate_sync_hardening)
 ]
 
 
