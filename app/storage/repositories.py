@@ -7,6 +7,7 @@ SQL; the sync engine below it can diff anything a repository can produce.
 from __future__ import annotations
 
 import sqlite3
+import json
 from typing import Any, Iterable, Sequence
 
 from app.models import (
@@ -654,6 +655,75 @@ class AuditRepository(_Repository):
         return [PatientHistoryEvent.from_row(r) for r in rows]
 
 
+
+class SyncConflictRepository(_Repository):
+    """Durable conflict queue. Snapshots are retained for explicit review."""
+
+    def record_patient_conflict(self, *, fingerprint: str, entity_id: str,
+                                local_version: int, remote_version: int,
+                                local_snapshot: dict, remote_snapshot: dict,
+                                conflicting_fields: list[str],
+                                source_device_id: str | None,
+                                detected_at: str) -> int:
+        self._exec(
+            """
+            INSERT INTO sync_conflicts (
+                fingerprint, entity_type, entity_id, local_version,
+                remote_version, local_snapshot, remote_snapshot,
+                conflicting_fields, source_device_id, detected_at
+            ) VALUES (?, 'patient', ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fingerprint) DO NOTHING
+            """,
+            (fingerprint, entity_id, local_version, remote_version,
+             json.dumps(local_snapshot, sort_keys=True, default=str),
+             json.dumps(remote_snapshot, sort_keys=True, default=str),
+             json.dumps(sorted(conflicting_fields)), source_device_id,
+             detected_at),
+        )
+        row = self._query_one(
+            "SELECT conflict_id FROM sync_conflicts WHERE fingerprint = ?",
+            (fingerprint,),
+        )
+        return int(row["conflict_id"])
+
+    def list_pending(self, limit: int = 100) -> list[dict]:
+        return self._query_all(
+            "SELECT conflict_id, entity_type, entity_id, local_version, "
+            "remote_version, conflicting_fields, source_device_id, detected_at "
+            "FROM sync_conflicts WHERE status = 'pending' "
+            "ORDER BY detected_at, conflict_id LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        )
+
+    def get_conflict(self, conflict_id: int) -> dict | None:
+        row = self._query_one(
+            "SELECT * FROM sync_conflicts WHERE conflict_id = ?",
+            (int(conflict_id),),
+        )
+        if row:
+            for key in ("local_snapshot", "remote_snapshot",
+                        "conflicting_fields", "resolution_snapshot"):
+                if row.get(key):
+                    row[key] = json.loads(row[key])
+        return row
+
+    def resolve(self, conflict_id: int, *, actor: str, choice: str,
+                resolution_snapshot: dict | None = None) -> bool:
+        from app.utils.dates import to_iso, utcnow
+        if choice not in {"keep_local", "apply_remote", "field_merge", "reject"}:
+            raise ValueError("Unsupported conflict resolution choice")
+        status = "rejected" if choice == "reject" else "resolved"
+        cur = self._exec(
+            "UPDATE sync_conflicts SET status = ?, resolved_by = ?, "
+            "resolved_at = ?, resolution_choice = ?, resolution_snapshot = ? "
+            "WHERE conflict_id = ? AND status = 'pending'",
+            (status, actor, to_iso(utcnow()), choice,
+             json.dumps(resolution_snapshot, sort_keys=True, default=str)
+             if resolution_snapshot is not None else None, int(conflict_id)),
+        )
+        return cur.rowcount == 1
+
+
 class TemplateRepository(_Repository):
     """Facility-defined chart fields and their per-patient values.
 
@@ -833,6 +903,7 @@ def build_repositories(db) -> dict[str, Any]:
         "units": UnitRepository(db),
         "devices": DeviceRepository(db),
         "audit": AuditRepository(db),
+        "sync_conflicts": SyncConflictRepository(db),
         "stats": StatsRepository(db),
         "template": TemplateRepository(db),
     }
