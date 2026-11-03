@@ -55,6 +55,14 @@ def _migrate_sync_change_log(conn: sqlite3.Connection) -> None:
 
 def _migrate_sync_hardening(conn: sqlite3.Connection) -> None:
     """Add immutable revision snapshots, device-bound sessions and batch receipts."""
+    patient_cols = {row[1] for row in conn.execute("PRAGMA table_info(patients)")}
+    for name, declaration in (
+        ("created_by", "TEXT"), ("updated_by", "TEXT"),
+        ("origin_unit_id", "INTEGER"), ("deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ("change_id", "TEXT"),
+    ):
+        if name not in patient_cols:
+            conn.execute(f"ALTER TABLE patients ADD COLUMN {name} {declaration}")
     session_cols = {row[1] for row in conn.execute("PRAGMA table_info(auth_sessions)")}
     if "device_id" not in session_cols:
         conn.execute("ALTER TABLE auth_sessions ADD COLUMN device_id TEXT")
