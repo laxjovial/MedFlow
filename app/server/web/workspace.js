@@ -849,6 +849,60 @@ async function loadSettings() {
   if (perms.has("settings.manage")) loadRules();
 }
 
+function conflictNode(tag, value, cls) {
+  const el = document.createElement(tag);
+  if (value !== undefined && value !== null) el.textContent = String(value);
+  if (cls) el.className = cls;
+  return el;
+}
+async function loadSyncConflicts() {
+  const list = $("#sync-conflicts-list"), count = $("#sync-conflicts-count");
+  if (!list || !count) return;
+  list.replaceChildren(conflictNode("p", "Loading…", "muted small"));
+  try {
+    const rows = await api("/sync/conflicts?limit=200");
+    count.textContent = rows.length + " pending"; list.replaceChildren();
+    if (!rows.length) { list.appendChild(conflictNode("p", "No pending conflicts.", "muted small")); return; }
+    const table = conflictNode("table", null, "table"), body = conflictNode("tbody");
+    const head = conflictNode("tr"); ["Patient", "Local", "Remote", "Detected", ""].forEach(x => head.appendChild(conflictNode("th", x)));
+    const thead = conflictNode("thead"); thead.appendChild(head); table.appendChild(thead);
+    rows.forEach(item => {
+      const tr = conflictNode("tr");
+      [item.entity_id, item.local_version, item.remote_version, item.detected_at || ""].forEach(x => tr.appendChild(conflictNode("td", x)));
+      const td = conflictNode("td"), btn = conflictNode("button", "Review", "btn ghost");
+      btn.type = "button"; btn.addEventListener("click", () => openSyncConflict(item.conflict_id));
+      td.appendChild(btn); tr.appendChild(td); body.appendChild(tr);
+    });
+    table.appendChild(body); list.appendChild(table);
+  } catch (err) { count.textContent = "Unavailable"; list.replaceChildren(conflictNode("p", err.message, "muted small")); }
+}
+async function openSyncConflict(id) {
+  const panel = $("#sync-conflict-detail"); if (!panel) return;
+  panel.classList.remove("hidden"); panel.replaceChildren(conflictNode("p", "Loading…", "muted small"));
+  try {
+    const item = await api("/sync/conflicts/" + encodeURIComponent(id));
+    const local = item.local_snapshot || {}, remote = item.remote_snapshot || {};
+    const fields = Array.isArray(item.conflicting_fields) ? item.conflicting_fields : [];
+    panel.replaceChildren();
+    panel.appendChild(conflictNode("h4", "Patient " + item.entity_id + " — compare versions"));
+    const table = conflictNode("table", null, "table"), body = conflictNode("tbody"), head = conflictNode("tr");
+    ["Field", "Local value", "Remote value"].forEach(x => head.appendChild(conflictNode("th", x)));
+    const thead = conflictNode("thead"); thead.appendChild(head); table.appendChild(thead);
+    fields.forEach(field => { const tr = conflictNode("tr"); tr.appendChild(conflictNode("th", field));
+      [local[field], remote[field]].forEach(v => tr.appendChild(conflictNode("td", v == null ? "—" : JSON.stringify(v)))); body.appendChild(tr); });
+    table.appendChild(body); panel.appendChild(table);
+    const actions = conflictNode("div", null, "chip-row");
+    const submit = (label, choice) => { const btn = conflictNode("button", label, "btn"); btn.type = "button";
+      btn.addEventListener("click", async () => { if (!window.confirm("Confirm " + choice + " for patient " + item.entity_id + "?")) return;
+        btn.disabled = true; try { await api("/sync/conflicts/" + encodeURIComponent(id) + "/resolve", {method:"POST", body:JSON.stringify({choice})});
+          toast("Conflict resolved and audited.", "ok"); panel.classList.add("hidden"); await loadSyncConflicts();
+        } catch (err) { toast(err.message); btn.disabled = false; if (err.status === 409) await openSyncConflict(id); } }); actions.appendChild(btn); };
+    submit("Keep local", "keep_local"); submit("Apply remote", "apply_remote"); submit("Reject", "reject");
+    const close = conflictNode("button", "Close", "btn ghost"); close.type="button"; close.addEventListener("click", () => panel.classList.add("hidden")); actions.appendChild(close); panel.appendChild(actions);
+  } catch (err) { panel.replaceChildren(conflictNode("p", err.message, "muted small")); }
+}
+$("#btn-sync-conflicts-refresh")?.addEventListener("click", loadSyncConflicts);
+
 async function loadBackups() {
   try {
     const backups = await api("/backups");
