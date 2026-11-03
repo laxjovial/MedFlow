@@ -155,9 +155,9 @@ def test_logout_revokes_a_copied_cookie_token(client):
     assert logout.status_code == 200
 
     # Simulate a copied credential being replayed after logout.
-    client.cookies.set("medflow_session", token)
-    client.cookies.set("medflow_csrf", csrf)
-    replay = client.get("/api/patients", headers={"X-MedFlow-Web-Session": "1"})
+    replay = client.get(
+        "/api/patients", headers={"Authorization": f"Bearer {token}"}
+    )
     assert replay.status_code == 401
 
 
