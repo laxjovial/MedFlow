@@ -1591,6 +1591,23 @@ def create_app(config: Config | None = None, db=None, repos=None,
             raise HTTPException(status_code=422, detail="A batch_id (or change_id) of 1-128 characters is required")
         repos = request.app.state.repos
         db = repos["patients"].db
+        device = db.execute(
+            "SELECT unit_id, scope_version FROM devices WHERE device_id = ? AND revoked_at IS NULL",
+            (device_id,),
+        ).fetchone()
+        if not device or device["unit_id"] is None:
+            raise HTTPException(status_code=403, detail="Workstation must be assigned to a department before syncing")
+        allowed_units = db.execute(
+            "WITH RECURSIVE allowed(unit_id) AS (SELECT unit_id FROM units WHERE unit_id = ? UNION ALL SELECT u.unit_id FROM units u JOIN allowed a ON u.parent_id = a.unit_id) SELECT unit_id FROM allowed",
+            (device["unit_id"],),
+        ).fetchall()
+        allowed_unit_ids = {int(row["unit_id"]) for row in allowed_units}
+        for patient_row in body.patients:
+            origin = patient_row.get("origin_unit_id")
+            if origin is None:
+                patient_row["origin_unit_id"] = int(device["unit_id"])
+            elif int(origin) not in allowed_unit_ids:
+                raise HTTPException(status_code=403, detail="Batch contains a patient outside the workstation's assigned unit scope")
         import json
         import hashlib
         from app.services.sync import SyncEngine
@@ -1692,9 +1709,19 @@ def create_app(config: Config | None = None, db=None, repos=None,
         if limit < 1 or limit > 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         repos = request.app.state.repos
-        return repos["patients"].sync_changes_page(
+        db = repos["patients"].db
+        device = db.execute(
+            "SELECT unit_id, scope_version FROM devices WHERE device_id = ? AND revoked_at IS NULL",
+            (bound_device,),
+        ).fetchone()
+        if not device or device["unit_id"] is None:
+            raise HTTPException(status_code=403, detail="Workstation must be assigned to a department before syncing")
+        page = repos["patients"].sync_changes_page(
             since=since, limit=limit, device_id=bound_device,
+            unit_id=int(device["unit_id"]),
         )
+        return {**page, "scope_unit_id": int(device["unit_id"]),
+                "scope_version": int(device["scope_version"])}
 
     # ----------------------------------------------------------- exchange
 
