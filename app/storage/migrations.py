@@ -15,6 +15,44 @@ from app.utils.logging_utils import get_logger
 
 log = get_logger("storage.migrations")
 
+def _migrate_sync_change_log(conn: sqlite3.Connection) -> None:
+    """Install the monotonic patient change log on current and legacy DBs."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(patients)").fetchall()}
+    for name, declaration in (
+        ("version", "INTEGER NOT NULL DEFAULT 1"),
+        ("updated_at", "TEXT"),
+        ("device_id", "TEXT"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE patients ADD COLUMN {name} {declaration}")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sync_change_log (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL,
+        version INTEGER NOT NULL,
+        device_id TEXT,
+        changed_at TEXT
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_change_log_patient ON sync_change_log(patient_id, seq)")
+    conn.execute("""
+        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
+        SELECT patient_id, version, device_id, updated_at FROM patients
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_patients_sync_insert
+        AFTER INSERT ON patients BEGIN
+            INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
+            VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_patients_sync_update
+        AFTER UPDATE ON patients BEGIN
+            INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
+            VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
+        END
+    """)
+
+
 # Future migrations append here: (target_version, callable(conn)).
 # Each entry must bring the database from target_version - 1 to target_version.
 MIGRATIONS: list[tuple[int, "callable"]] = [
@@ -157,41 +195,7 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
         ),
     )),
     # v7 -> v8: monotonic patient change sequence for incremental sync.
-    (8, lambda conn: (
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sync_change_log (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                patient_id INTEGER NOT NULL,
-                version INTEGER NOT NULL,
-                device_id TEXT,
-                changed_at TEXT
-            )
-        """),
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sync_change_log_patient "
-            "ON sync_change_log(patient_id, seq)"
-        ),
-        conn.execute("""
-            INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
-            SELECT patient_id, version, device_id, updated_at FROM patients
-        """),
-        conn.execute("""
-            CREATE TRIGGER IF NOT EXISTS trg_patients_sync_insert
-            AFTER INSERT ON patients
-            BEGIN
-                INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
-                VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
-            END
-        """),
-        conn.execute("""
-            CREATE TRIGGER IF NOT EXISTS trg_patients_sync_update
-            AFTER UPDATE ON patients
-            BEGIN
-                INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
-                VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
-            END
-        """),
-    ))
+    (8, _migrate_sync_change_log)
 ]
 
 
