@@ -58,10 +58,13 @@ def current_user(request: Request) -> dict:
     if not jti or not registry.is_active(jti):
         raise HTTPException(status_code=401, detail="Session is revoked or expired")
 
-    user = request.app.state.repos["users"].get(payload.get("sub", 0))
+    user_id = int(payload.get("sub", 0))
+    user = request.app.state.repos["users"].get(user_id)
     if not user or not user.active:
+        registry.revoke_user(user_id)
         raise HTTPException(status_code=401, detail="Account is inactive")
     if user.is_expired(to_iso(utcnow())):
+        registry.revoke_user(user_id)
         raise HTTPException(status_code=401, detail="Temporary access has expired")
     return {
         "sub": user.user_id,
