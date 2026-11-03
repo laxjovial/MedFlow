@@ -545,15 +545,25 @@ def create_app(config: Config | None = None, db=None, repos=None,
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
         db = request.app.state.repos["users"].db
-        existing_device = db.execute(
-            "SELECT device_id FROM devices WHERE device_id = ?", (device_id,)
-        ).fetchone()
-        if not existing_device:
-            from app.utils.dates import to_iso, utcnow
-            db.execute(
-                "INSERT INTO devices(device_id, label, registered_at) VALUES (?, ?, ?)",
-                (device_id, "Paired desktop workstation", to_iso(utcnow())),
-            )
+        from app.utils.dates import to_iso, utcnow
+        # Re-pairing is an explicit administrative recovery path: revoke all
+        # old sessions, then bind the workstation to this account and unit.
+        registry = SessionRegistry(db)
+        registry.revoke_device(device_id)
+        db.execute(
+            """
+            INSERT INTO devices
+                (device_id, label, registered_at, owner_user_id, unit_id, revoked_at)
+            VALUES (?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(device_id) DO UPDATE SET
+                owner_user_id = excluded.owner_user_id,
+                unit_id = excluded.unit_id,
+                revoked_at = NULL,
+                label = excluded.label
+            """,
+            (device_id, "Paired desktop workstation", to_iso(utcnow()),
+             user.user_id, user.unit_id),
+        )
         token = _issue_registered_token(request, {
             "sub": user.user_id, "username": user.username, "role": user.role,
             "device_id": device_id,
