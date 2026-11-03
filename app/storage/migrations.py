@@ -127,7 +127,7 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
             "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_active "
             "ON auth_sessions(user_id, revoked_at, expires_at)"
         ),
-    )),,
+    )),
     # v6 -> v7: durable, idempotent sync conflict review queue.
     (7, lambda conn: (
         conn.execute("""
