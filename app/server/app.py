@@ -467,6 +467,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
             "permissions": sorted(security.permissions(user)),
+            "temporary": user.role == "temporary",
+            "expires_at": user.expires_at,
         }, remember=body.remember)
 
     # ------------------------------------------------- desktop pairing
