@@ -150,6 +150,7 @@ TABLES: tuple[str, ...] = (
         batch_id TEXT NOT NULL,
         user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
         response_json TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY(device_id, batch_id)
     )
