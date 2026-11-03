@@ -102,7 +102,18 @@ def test_exchange_bundle_endpoint(client, auth, patient):
     assert bundle["patient"]["name"] == patient.name
 
 
-def test_sync_pull_returns_patients(client, auth, patient):
+def _bind_sync_test_session(client, auth, repos, device_id="workstation-A"):
+    from app.server.tokens import verify
+    token = auth["Authorization"].split(" ", 1)[1]
+    claims = verify(token, client.app.state.token_secret)
+    repos["patients"].db.execute(
+        "UPDATE auth_sessions SET client_type = 'desktop', device_id = ? WHERE jti = ?",
+        (device_id, claims["jti"]),
+    )
+
+
+def test_sync_pull_returns_patients(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos)
     response = client.get("/api/sync/pull", headers=auth)
     numbers = [p["patient_number"] for p in response.json()["patients"]]
     assert patient.patient_number in numbers
@@ -198,6 +209,7 @@ def test_pairing_redeem_rate_limit_returns_429(client):
 
 
 def test_sync_pull_uses_incremental_cursor_and_echo_suppression(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
     local = repos["patients"].get(patient.patient_id)
     local.device_id = "workstation-A"
     repos["patients"].update(local, ["device_id"], bump_version=False)
@@ -226,13 +238,15 @@ def test_sync_pull_uses_incremental_cursor_and_echo_suppression(client, auth, re
     }
 
 
-def test_sync_pull_validates_cursor_and_page_size(client, auth):
+def test_sync_pull_validates_cursor_and_page_size(client, auth, repos):
+    _bind_sync_test_session(client, auth, repos)
     assert client.get("/api/sync/pull?since=-1", headers=auth).status_code == 422
     assert client.get("/api/sync/pull?limit=0", headers=auth).status_code == 422
     assert client.get("/api/sync/pull?limit=501", headers=auth).status_code == 422
 
 
 def test_sync_push_reports_conflicts_separately_from_accepted(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
     from datetime import datetime
     from app.models import Patient
 
