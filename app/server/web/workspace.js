@@ -891,13 +891,28 @@ async function openSyncConflict(id) {
     fields.forEach(field => { const tr = conflictNode("tr"); tr.appendChild(conflictNode("th", field));
       [local[field], remote[field]].forEach(v => tr.appendChild(conflictNode("td", v == null ? "—" : JSON.stringify(v)))); body.appendChild(tr); });
     table.appendChild(body); panel.appendChild(table);
+    panel.appendChild(conflictNode("h4", "Field-level merge"));
+    const selectors = new Map();
+    fields.forEach(field => {
+      const label = conflictNode("label", null, "check-row");
+      label.appendChild(conflictNode("span", field));
+      const select = conflictNode("select");
+      [["local", "Keep local"], ["remote", "Use remote"]].forEach(pair => {
+        const option = conflictNode("option", pair[1]); option.value = pair[0]; select.appendChild(option);
+      });
+      label.appendChild(select); panel.appendChild(label); selectors.set(field, select);
+    });
     const actions = conflictNode("div", null, "chip-row");
     const submit = (label, choice) => { const btn = conflictNode("button", label, "btn"); btn.type = "button";
       btn.addEventListener("click", async () => { if (!window.confirm("Confirm " + choice + " for patient " + item.entity_id + "?")) return;
-        btn.disabled = true; try { await api("/sync/conflicts/" + encodeURIComponent(id) + "/resolve", {method:"POST", body:JSON.stringify({choice})});
+        const payload = {choice};
+        if (choice === "field_merge") { payload.merged_fields = {}; selectors.forEach((select, field) => { payload.merged_fields[field] = select.value === "local" ? local[field] : remote[field]; }); }
+        btn.disabled = true; try { await api("/sync/conflicts/" + encodeURIComponent(id) + "/resolve", {method:"POST", body:JSON.stringify(payload)});
           toast("Conflict resolved and audited.", "ok"); panel.classList.add("hidden"); await loadSyncConflicts();
         } catch (err) { toast(err.message); btn.disabled = false; if (err.status === 409) await openSyncConflict(id); } }); actions.appendChild(btn); };
-    submit("Keep local", "keep_local"); submit("Apply remote", "apply_remote"); submit("Reject", "reject");
+    submit("Keep local", "keep_local"); submit("Apply remote", "apply_remote");
+    if (fields.length) submit("Save field merge", "field_merge");
+    submit("Reject", "reject");
     const close = conflictNode("button", "Close", "btn ghost"); close.type="button"; close.addEventListener("click", () => panel.classList.add("hidden")); actions.appendChild(close); panel.appendChild(actions);
   } catch (err) { panel.replaceChildren(conflictNode("p", err.message, "muted small")); }
 }
