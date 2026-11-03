@@ -46,7 +46,7 @@ def test_sync_conflict_review_uses_authorized_api_and_safe_dom_construction():
     assert 'api("/sync/conflicts/" + encodeURIComponent(id))' in source
     assert 'permissions.has("sync.manage") && permissions.has("patients.view")' in source
     assert 'document.createElement(tag)' in source
-    assert 'node.textContent = String(value)' in source
+    assert 'el.textContent = String(value)' in source
     assert 'api("/sync/conflicts/" + encodeURIComponent(id) + "/resolve"' in source
     assert 'payload.merged_fields' in source
 
