@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -62,7 +62,8 @@ TABLES: tuple[str, ...] = (
         client_type TEXT NOT NULL DEFAULT 'api',
         issued_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
-        revoked_at INTEGER
+        revoked_at INTEGER,
+        device_id TEXT
     )
     """,
     """
@@ -135,7 +136,8 @@ TABLES: tuple[str, ...] = (
         patient_id INTEGER NOT NULL,
         version INTEGER NOT NULL,
         device_id TEXT,
-        changed_at TEXT
+        changed_at TEXT,
+        snapshot TEXT
     )
     """,
     """
@@ -143,19 +145,57 @@ TABLES: tuple[str, ...] = (
     ON sync_change_log(patient_id, seq)
     """,
     """
+    CREATE TABLE IF NOT EXISTS sync_batches (
+        device_id TEXT NOT NULL,
+        batch_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        response_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(device_id, batch_id)
+    )
+    """,
+    """
     CREATE TRIGGER IF NOT EXISTS trg_patients_sync_insert
     AFTER INSERT ON patients
     BEGIN
-        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
-        VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
+        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at, snapshot)
+        VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at,
+            json_object(
+                'patient_id', NEW.patient_id, 'patient_number', NEW.patient_number,
+                'name', NEW.name, 'age', NEW.age, 'sex', NEW.sex,
+                'date_of_birth', NEW.date_of_birth, 'phone', NEW.phone,
+                'email', NEW.email, 'address', NEW.address,
+                'blood_pressure', NEW.blood_pressure, 'heart_rate', NEW.heart_rate,
+                'weight', NEW.weight, 'medical_history', NEW.medical_history,
+                'diagnosis', NEW.diagnosis, 'notes', NEW.notes,
+                'version', NEW.version, 'created_at', NEW.created_at,
+                'updated_at', NEW.updated_at, 'created_by', NEW.created_by,
+                'updated_by', NEW.updated_by, 'device_id', NEW.device_id,
+                'origin_unit_id', NEW.origin_unit_id, 'deleted', NEW.deleted,
+                'change_id', NEW.change_id
+            ));
     END
     """,
     """
     CREATE TRIGGER IF NOT EXISTS trg_patients_sync_update
     AFTER UPDATE ON patients
     BEGIN
-        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
-        VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
+        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at, snapshot)
+        VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at,
+            json_object(
+                'patient_id', NEW.patient_id, 'patient_number', NEW.patient_number,
+                'name', NEW.name, 'age', NEW.age, 'sex', NEW.sex,
+                'date_of_birth', NEW.date_of_birth, 'phone', NEW.phone,
+                'email', NEW.email, 'address', NEW.address,
+                'blood_pressure', NEW.blood_pressure, 'heart_rate', NEW.heart_rate,
+                'weight', NEW.weight, 'medical_history', NEW.medical_history,
+                'diagnosis', NEW.diagnosis, 'notes', NEW.notes,
+                'version', NEW.version, 'created_at', NEW.created_at,
+                'updated_at', NEW.updated_at, 'created_by', NEW.created_by,
+                'updated_by', NEW.updated_by, 'device_id', NEW.device_id,
+                'origin_unit_id', NEW.origin_unit_id, 'deleted', NEW.deleted,
+                'change_id', NEW.change_id
+            ));
     END
     """,
     # --- clinical chart ---
