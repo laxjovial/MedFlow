@@ -363,6 +363,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
 
     @app.post("/api/auth/login", tags=["auth"])
     def login(body: LoginRequest, request: Request):
+        if is_web_session_request(request):
+            _require_same_origin(request)
         _limit_auth(request, "login", limit=5, identity=body.username.strip().casefold())
         users = request.app.state.repos["users"]
         from app.services.security import SecurityService
@@ -585,6 +587,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
             raise HTTPException(status_code=404, detail="No such temporary user")
         target.active = False
         request.app.state.repos["users"].update(target, ["active"])
+        SessionRegistry(request.app.state.repos["users"].db).revoke_user(user_id)
         return {"ok": True}
 
     @app.get("/api/auth/me", tags=["auth"])
@@ -1181,6 +1184,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
         svc = OrgService(repos, SecurityService(repos["users"]))
         if body.password:
             svc.change_password(user_id, body.password)
+            SessionRegistry(repos["users"].db).revoke_user(user_id)
+        if body.active is False:
+            SessionRegistry(repos["users"].db).revoke_user(user_id)
         if body.role:
             svc.change_role(user_id, body.role)
         if body.active is not None:
