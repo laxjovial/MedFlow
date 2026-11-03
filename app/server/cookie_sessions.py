@@ -48,8 +48,7 @@ def set_browser_session(
 ) -> None:
     """Issue a fresh HttpOnly session cookie and session-bound CSRF cookie."""
     configured = getattr(getattr(request.app.state.config, "session", None), "cookie_secure", None)
-    configured = getattr(getattr(request.app.state.config, "session", None), "cookie_secure", None)
-    secure = request.url.scheme == "https" if configured is None else bool(configured) if configured is None else bool(configured)
+    secure = request.url.scheme == "https" if configured is None else bool(configured)
     common = {
         "max_age": max(0, int(ttl)),
         "path": "/",
