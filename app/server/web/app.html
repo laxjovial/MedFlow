@@ -280,6 +280,16 @@ Grace Uche,+2348010001111,34,female,Malaria,Outpatients</div>
               </form>
               <table id="template-table" class="table"></table>
             </div>
+            <div class="card" id="set-sync-conflicts">
+              <h3>Synchronization conflicts</h3>
+              <p class="muted small">Review patient records changed on this facility and another device. Compare the saved versions before choosing a resolution. Every decision is audited.</p>
+              <div class="chip-row">
+                <button id="btn-sync-conflicts-refresh" class="btn">Refresh queue</button>
+                <span id="sync-conflicts-count" class="muted small">—</span>
+              </div>
+              <div id="sync-conflicts-list" aria-live="polite"><p class="muted small">Open Settings to load pending conflicts.</p></div>
+              <div id="sync-conflict-detail" class="hidden" aria-live="polite"></div>
+            </div>
             <div class="card" id="set-backups">
               <h3>Backups</h3>
               <div class="chip-row">
