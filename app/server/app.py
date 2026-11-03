@@ -32,7 +32,8 @@ from app.server.deps import (
 from app.server.pairing import PairingError, pairing
 from app.server.rate_limit import SlidingWindowRateLimiter
 from app.server import sessions as sessions_policy
-from app.server.tokens import issue
+from app.server.tokens import issue, verify
+from app.server.session_registry import SessionRegistry
 from app.server.cookie_sessions import is_web_session_request, set_browser_session, clear_browser_session
 from app.services.offsite import (
     OffsiteBackupService,
@@ -337,6 +338,15 @@ def create_app(config: Config | None = None, db=None, repos=None,
         if parsed.scheme != request.url.scheme or parsed.netloc != request.url.netloc:
             raise HTTPException(status_code=403, detail="Cross-origin request rejected")
 
+    def _issue_registered_token(request: Request, payload: dict, ttl: int,
+                                client_type: str = "api") -> str:
+        token = issue(payload, request.app.state.token_secret, ttl=ttl)
+        claims = verify(token, request.app.state.token_secret)
+        SessionRegistry(request.app.state.repos["users"].db).register(
+            claims["jti"], int(claims["sub"]), int(claims["exp"]), client_type
+        )
+        return token
+
     def _auth_response(request: Request, token: str, ttl: int, user_data: dict,
                        remember: bool = False):
         if is_web_session_request(request):
@@ -365,13 +375,13 @@ def create_app(config: Config | None = None, db=None, repos=None,
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
         ttl = sessions_policy.ttl_for(policy, body.remember)
-        token = issue({
+        token = _issue_registered_token(request, {
             "sub": user.user_id,
             "username": user.username,
             "role": user.role,
             "display_name": user.display_name,
             "remember": body.remember,
-        }, secret, ttl=ttl)
+        }, ttl, "browser" if is_web_session_request(request) else "api")
         return _auth_response(request, token, ttl, {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
@@ -420,9 +430,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
         secret = request.app.state.token_secret
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
-        token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role}, secret,
-                      ttl=policy.normal_ttl)
+        token = _issue_registered_token(request, {
+            "sub": user.user_id, "username": user.username, "role": user.role,
+        }, policy.normal_ttl, "browser" if is_web_session_request(request) else "api")
         return _auth_response(request, token, policy.normal_ttl, {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
@@ -461,8 +471,10 @@ def create_app(config: Config | None = None, db=None, repos=None,
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
         ttl = sessions_policy.ttl_for(policy, body.remember)
-        token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role, "remember": body.remember}, secret, ttl=ttl)
+        token = _issue_registered_token(request, {
+            "sub": user.user_id, "username": user.username,
+            "role": user.role, "remember": body.remember,
+        }, ttl, "browser" if is_web_session_request(request) else "api")
         return _auth_response(request, token, ttl, {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
@@ -525,8 +537,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
         secret = request.app.state.token_secret
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
-        token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role}, secret, ttl=policy.remember_ttl)
+        token = _issue_registered_token(request, {
+            "sub": user.user_id, "username": user.username, "role": user.role,
+        }, policy.remember_ttl, "desktop")
         return {"token": token, "identity": identity, "user": {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
@@ -586,6 +599,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
 
     @app.post("/api/auth/logout", tags=["auth"])
     def logout(request: Request, user=Depends(current_user)):
+        SessionRegistry(request.app.state.repos["users"].db).revoke(user["jti"])
         response = JSONResponse({"ok": True})
         clear_browser_session(response, request)
         return response
@@ -610,7 +624,14 @@ def create_app(config: Config | None = None, db=None, repos=None,
         }
         rolled = sessions_policy.refreshed_payload(payload, policy)
         ttl = sessions_policy.ttl_for(policy, remember)
-        token = issue(payload, request.app.state.token_secret, ttl=ttl)
+        if not rolled:
+            ttl = max(1, int(user.get("token_expires_at", 0)) - int(__import__("time").time()))
+        registry = SessionRegistry(request.app.state.repos["users"].db)
+        registry.revoke(user["jti"])
+        token = _issue_registered_token(
+            request, payload, ttl,
+            "browser" if is_web_session_request(request) else "api",
+        )
         if is_web_session_request(request) and request.cookies.get("medflow_session"):
             response = JSONResponse({"refreshed": bool(rolled), "expires_in": ttl})
             set_browser_session(response, request, token, ttl)
