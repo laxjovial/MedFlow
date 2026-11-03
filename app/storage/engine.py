@@ -87,19 +87,28 @@ class Database:
                 self._local.transaction_depth = depth + 1
                 try:
                     yield conn
+                except Exception:
+                    self._local.transaction_failed = True
+                    raise
                 finally:
                     self._local.transaction_depth = depth
                 return
             conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             self._local.transaction_depth = 1
+            self._local.transaction_failed = False
             try:
                 yield conn
+                if self._local.transaction_failed:
+                    conn.rollback()
+                    raise RuntimeError("Nested transaction failed; outer transaction rolled back")
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
             finally:
                 self._local.transaction_depth = 0
+                self._local.transaction_failed = False
+
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
         if conn is not None:
