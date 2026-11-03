@@ -61,9 +61,8 @@ def current_user(request: Request) -> dict:
     if int(session["user_id"]) != int(payload.get("sub", 0)):
         raise HTTPException(status_code=401, detail="Session identity mismatch")
     bound_device = session.get("device_id")
-    if session.get("client_type") == "desktop":
-        if not bound_device or payload.get("device_id") != bound_device:
-            raise HTTPException(status_code=401, detail="Desktop device binding is invalid")
+    if session.get("client_type") == "desktop" and not bound_device:
+        raise HTTPException(status_code=401, detail="Desktop device binding is invalid")
 
     user_id = int(payload.get("sub", 0))
     user = request.app.state.repos["users"].get(user_id)
