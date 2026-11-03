@@ -1513,6 +1513,65 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "conflicts": [c.describe() for c in report.conflicts],
         }}
 
+    @app.get("/api/sync/conflicts", tags=["sync"])
+    def list_sync_conflicts(limit: int = 100, user=Depends(current_user),
+                            request: Request = None):
+        require(user, "sync.manage")
+        require(user, "patients.view")
+        return request.app.state.repos["sync_conflicts"].list_pending(limit)
+
+    @app.get("/api/sync/conflicts/{conflict_id}", tags=["sync"])
+    def get_sync_conflict(conflict_id: int, user=Depends(current_user),
+                          request: Request = None):
+        require(user, "sync.manage")
+        require(user, "patients.view")
+        conflict = request.app.state.repos["sync_conflicts"].get_conflict(conflict_id)
+        if not conflict:
+            raise HTTPException(status_code=404, detail="Conflict not found")
+        return conflict
+
+    @app.post("/api/sync/conflicts/{conflict_id}/resolve", tags=["sync"])
+    def resolve_sync_conflict(conflict_id: int, body: dict,
+                              user=Depends(current_user),
+                              request: Request = None):
+        require(user, "sync.manage")
+        require(user, "patients.view")
+        choice = body.get("choice")
+        if choice not in {"keep_local", "apply_remote", "reject"}:
+            raise HTTPException(status_code=422, detail="Unsupported resolution choice")
+        conflict_repo = request.app.state.repos["sync_conflicts"]
+        conflict = conflict_repo.get_conflict(conflict_id)
+        if not conflict:
+            raise HTTPException(status_code=404, detail="Conflict not found")
+        if conflict["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Conflict is already resolved")
+        if choice == "apply_remote":
+            local = request.app.state.repos["patients"].get_by_number(conflict["entity_id"])
+            if not local or int(local.version) != int(conflict["local_version"]):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Local patient changed since conflict detection; sync again before resolving",
+                )
+            from app.models import Patient
+            remote = Patient.from_row(conflict["remote_snapshot"])
+            request.app.state.repos["patients"].upsert_from_remote(remote)
+        resolved = conflict_repo.resolve(
+            conflict_id, actor=user["username"], choice=choice,
+            resolution_snapshot=conflict["remote_snapshot"] if choice == "apply_remote" else None,
+        )
+        if not resolved:
+            raise HTTPException(status_code=409, detail="Conflict was resolved concurrently")
+        from app.models import AuditEvent
+        request.app.state.repos["audit"].record(AuditEvent(
+            action="sync_conflict_resolved", entity_type="sync_conflict",
+            entity_id=str(conflict_id),
+            details=f"choice={choice}; patient={conflict['entity_id']}",
+            actor=user["username"],
+        ))
+        return {"ok": True, "conflict_id": conflict_id, "status":
+                "rejected" if choice == "reject" else "resolved",
+                "resolution": choice}
+
     @app.get("/api/sync/pull", tags=["sync"])
     def sync_pull(request: Request = None, user=Depends(current_user)):
         require(user, "sync.manage")
