@@ -104,9 +104,22 @@ def test_exchange_bundle_endpoint(client, auth, patient):
 
 def _bind_sync_test_session(client, auth, repos, device_id="workstation-A"):
     from app.server.tokens import verify
+    from app.models import Unit
+    from app.utils.dates import to_iso, utcnow
     token = auth["Authorization"].split(" ", 1)[1]
     claims = verify(token, client.app.state.token_secret)
-    repos["patients"].db.execute(
+    db = repos["patients"].db
+    unit = repos["units"].insert(Unit(name="Sync Test Unit", kind="department"))
+    db.execute("UPDATE users SET unit_id = ? WHERE user_id = ?",
+               (unit.unit_id, claims["sub"]))
+    db.execute("UPDATE patients SET origin_unit_id = ?",
+               (unit.unit_id,))
+    db.execute(
+        "INSERT INTO devices(device_id, label, unit_id, owner_user_id, registered_at, scope_version) "
+        "VALUES (?, ?, ?, ?, ?, 1)",
+        (device_id, "Test workstation", unit.unit_id, claims["sub"], to_iso(utcnow())),
+    )
+    db.execute(
         "UPDATE auth_sessions SET client_type = 'desktop', device_id = ? WHERE jti = ?",
         (device_id, claims["jti"]),
     )
