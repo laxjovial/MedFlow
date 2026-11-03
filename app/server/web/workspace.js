@@ -5,7 +5,6 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const state = {
-  token: null,
   user: null,
   patients: [],
   currentPatient: null,
@@ -14,19 +13,27 @@ const state = {
 /* ------------------------------------------------------------------ api */
 
 async function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  const res = await fetch(`/api${path}`, { ...options, headers });
-  if (res.status === 401 && state.token) {
-    logout();
+  const headers = {
+    "Content-Type": "application/json",
+    "X-MedFlow-Web-Session": "1",
+    ...(options.headers || {}),
+  };
+  const method = (options.method || "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const item = document.cookie.split("; ").find(v => v.startsWith("medflow_csrf="));
+    if (item) headers["X-CSRF-Token"] = decodeURIComponent(item.slice("medflow_csrf=".length));
+  }
+  const res = await fetch(`/api${path}`, {
+    ...options, method, headers, credentials: "same-origin",
+  });
+  if (res.status === 401) {
+    await logout();
     throw new Error("Session expired — sign in again.");
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = body.error || body.detail || {};
-    const message = typeof detail === "string"
-      ? detail
-      : (detail.message || JSON.stringify(detail));
+    const message = typeof detail === "string" ? detail : (detail.message || JSON.stringify(detail));
     const err = new Error(message);
     err.fields = detail.fields;
     err.status = res.status;
@@ -37,9 +44,17 @@ async function api(path, options = {}) {
 
 /* ------------------------------------------------------------------ auth */
 
-function logout() {
-  state.token = null;
+async function logout() {
+  const headers = { "X-MedFlow-Web-Session": "1" };
+  const item = document.cookie.split("; ").find(v => v.startsWith("medflow_csrf="));
+  if (item) headers["X-CSRF-Token"] = decodeURIComponent(item.slice("medflow_csrf=".length));
+  try {
+    await fetch("/api/auth/logout", {
+      method: "POST", headers, credentials: "same-origin",
+    });
+  } catch { /* clear local UI regardless */ }
   state.user = null;
+  clearInterval(refreshTimer);
   localStorage.removeItem("medflow.session");
   localStorage.removeItem("medflow.remember");
   $("#app-view").classList.add("hidden");
@@ -51,31 +66,18 @@ async function login(username, password, remember = false) {
     method: "POST",
     body: JSON.stringify({ username, password, remember }),
   });
-  state.token = data.token;
   state.user = data.user;
-  localStorage.setItem("medflow.session",
-    JSON.stringify({ token: data.token, user: data.user }));
+  localStorage.removeItem("medflow.session");
   enterApp();
 }
 
-/* Rolling sessions: while this tab is open the workspace quietly renews
-   the sign-in every hour, so a long shift never ends mid-visit. */
 let refreshTimer = null;
-
 function startSessionRefresh() {
   clearInterval(refreshTimer);
   refreshTimer = setInterval(async () => {
-    if (!state.token) return;
-    try {
-      const data = await api("/auth/refresh", { method: "POST" });
-      state.token = data.token;
-      const raw = localStorage.getItem("medflow.session");
-      if (raw) {
-        const session = JSON.parse(raw);
-        session.token = data.token;
-        localStorage.setItem("medflow.session", JSON.stringify(session));
-      }
-    } catch { /* next hour will retry; 401s already force logout */ }
+    if (!state.user) return;
+    try { await api("/auth/refresh", { method: "POST" }); }
+    catch { /* expired sessions are handled by api() */ }
   }, 60 * 60 * 1000);
 }
 
@@ -104,8 +106,12 @@ function enterApp() {
   initBell();
   initSettingsNav();
   initTempAccessForm();
-  api("/health").then(h =>
-    $("#facility-label").textContent = `— ${h.facility}`).catch(() => {});
+  // Facility metadata is no longer public on /api/health. Only ask for
+  // operational metrics when this user has the existing reports permission.
+  if (perms.has("reports.view")) {
+    api("/system/metrics").then(metrics =>
+      $("#facility-label").textContent = `— ${metrics.facility}`).catch(() => {});
+  }
 }
 
 /* ------------------------------------------------------------------ nav */
@@ -203,7 +209,7 @@ async function loadDepartments() {
       const cur = inviteUnit.value;
       inviteUnit.innerHTML = '<option value="">No department</option>' +
         deptCache.filter(d => d.kind !== "organization")
-          .map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+          .map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
       if ([...inviteUnit.options].some(o => o.value === cur)) inviteUnit.value = cur;
     }
     const table = $("#departments-table");
@@ -380,7 +386,7 @@ function renderChartTemplate(sections) {
         input.dataset.templateId = f.template_id;
         input.innerHTML = '<option value="">—</option>' +
           f.choices.split(",").map(c => c.trim()).filter(Boolean)
-            .map(c => `<option ${f.value === c ? "selected" : ""}>${esc(c)}</option>`).join("");
+            .map(c => `<option value="${esc(c)}" ${f.value === c ? "selected" : ""}>${esc(c)}</option>`).join("");
       } else if (f.value_type === "date") {
         input = document.createElement("input");
         input.type = "date";
@@ -485,11 +491,11 @@ $("#btn-import-run").addEventListener("click", async () => {
     const rep = $("#import-report");
     rep.classList.remove("hidden");
     rep.innerHTML =
-      `<p class="ok">Imported ${report.created} of ${report.total} record(s).</p>` +
+      `<p class="ok">Imported ${esc(report.created)} of ${esc(report.total)} record(s).</p>` +
       (report.failed.length
-        ? `<p class="warn-text">${report.failed.length} row(s) need attention:</p><ul class="plain-list">` +
+        ? `<p class="warn-text">${esc(report.failed.length)} row(s) need attention:</p><ul class="plain-list">` +
           report.failed.map(f =>
-            `<li>Row ${f.row}${f.name ? ` (${esc(f.name)})` : ""}: ${esc(f.error)}</li>`).join("") +
+            `<li>Row ${esc(f.row)}${f.name ? ` (${esc(f.name)})` : ""}: ${esc(f.error)}</li>`).join("") +
           "</ul>"
         : "");
     loadPatients();
@@ -507,7 +513,7 @@ async function loadDirectory() {
     const current = sel.value;
     sel.innerHTML = '<option value="">Whole facility</option>' +
       deptCache.map(d => d.kind === "organization"
-        ? "" : `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+        ? "" : `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
     if ([...sel.options].some(o => o.value === current)) sel.value = current;
     const roster = await api(
       `/patients/by-department${sel.value ? `?department_id=${sel.value}` : ""}`);
@@ -581,7 +587,7 @@ async function openChart(patientId) {
         <h2>${esc(chart.patient.name)}</h2>
         <span class="pnum">${esc(chart.patient.patient_number)}</span>
         <span class="tag">${esc(chart.patient.sex || "sex n/a")}</span>
-        ${chart.patient.age != null ? `<span class="tag">${chart.patient.age}y</span>` : ""}
+        ${chart.patient.age != null ? `<span class="tag">${esc(chart.patient.age)}y</span>` : ""}
         ${chart.patient.origin_unit_id && deptName(chart.patient.origin_unit_id) ? `<span class="tag">${esc(deptName(chart.patient.origin_unit_id))}</span>` : ""}
         ${chart.patient.blood_pressure ? `<span class="tag warn">BP ${esc(chart.patient.blood_pressure)}</span>` : ""}
       </div>
@@ -705,7 +711,7 @@ async function loadAppointments() {
       const myAppts = await api(`/appointments?scope=upcoming&provider=${encodeURIComponent(me)}`);
       if (myAppts.length) {
         const next = myAppts[0];
-        mine.innerHTML = `<strong>${myAppts.length}</strong> upcoming appointment(s) booked for you — ` +
+        mine.innerHTML = `<strong>${esc(myAppts.length)}</strong> upcoming appointment(s) booked for you — ` +
           `next: ${esc(next.patient_name)} at ${fmtDT(next.scheduled_at)}.`;
         mine.classList.remove("hidden");
       } else {
@@ -796,13 +802,14 @@ async function loadReports() {
   }
 }
 
-/* authorized downloads: fetch with the Bearer token, then save the blob */
+/* authorized downloads: use the browser cookie session, then save the blob */
 $$("#export-row [data-export]").forEach(btn =>
   btn.addEventListener("click", async () => {
     const name = btn.dataset.export, fmt = btn.dataset.fmt;
     try {
       const res = await fetch(`/api/export/${name}.${fmt}`, {
-        headers: { Authorization: `Bearer ${state.token}` },
+        headers: { "X-MedFlow-Web-Session": "1" },
+        credentials: "same-origin",
       });
       if (!res.ok) throw new Error("Export failed");
       const blob = await res.blob();
@@ -819,11 +826,21 @@ $$("#export-row [data-export]").forEach(btn =>
 /* ------------------------------------------------------------------ settings */
 
 async function loadSettings() {
-  api("/health").then(h =>
-    $("#settings-facility").textContent =
-      `${h.facility} — ${h.patients} patient record(s)`).catch(() => {});
+  // Facility counts are operational metrics and require the existing permission.
+  if (new Set(state.user.permissions || []).has("reports.view")) {
+    api("/system/metrics").then(metrics =>
+      $("#settings-facility").textContent =
+        `${metrics.facility} — ${metrics.patients} patient record(s)`).catch(() => {});
+  }
   initSettingsNav();
   loadBackups();
+  const permissions = new Set(state.user.permissions || []);
+  const conflictCard = $("#set-sync-conflicts");
+  if (conflictCard) {
+    const allowed = permissions.has("sync.manage") && permissions.has("patients.view");
+    conflictCard.classList.toggle("hidden", !allowed);
+    if (allowed) loadSyncConflicts();
+  }
   loadBin();
   loadCloudBackup();
   loadSessionPolicy();
@@ -831,6 +848,75 @@ async function loadSettings() {
   if (perms.has("users.manage")) loadStaff();
   if (perms.has("settings.manage")) loadRules();
 }
+
+function conflictNode(tag, value, cls) {
+  const el = document.createElement(tag);
+  if (value !== undefined && value !== null) el.textContent = String(value);
+  if (cls) el.className = cls;
+  return el;
+}
+async function loadSyncConflicts() {
+  const list = $("#sync-conflicts-list"), count = $("#sync-conflicts-count");
+  if (!list || !count) return;
+  list.replaceChildren(conflictNode("p", "Loading…", "muted small"));
+  try {
+    const rows = await api("/sync/conflicts?limit=200");
+    count.textContent = rows.length + " pending"; list.replaceChildren();
+    if (!rows.length) { list.appendChild(conflictNode("p", "No pending conflicts.", "muted small")); return; }
+    const table = conflictNode("table", null, "table"), body = conflictNode("tbody");
+    const head = conflictNode("tr"); ["Patient", "Local", "Remote", "Detected", ""].forEach(x => head.appendChild(conflictNode("th", x)));
+    const thead = conflictNode("thead"); thead.appendChild(head); table.appendChild(thead);
+    rows.forEach(item => {
+      const tr = conflictNode("tr");
+      [item.entity_id, item.local_version, item.remote_version, item.detected_at || ""].forEach(x => tr.appendChild(conflictNode("td", x)));
+      const td = conflictNode("td"), btn = conflictNode("button", "Review", "btn ghost");
+      btn.type = "button"; btn.addEventListener("click", () => openSyncConflict(item.conflict_id));
+      td.appendChild(btn); tr.appendChild(td); body.appendChild(tr);
+    });
+    table.appendChild(body); list.appendChild(table);
+  } catch (err) { count.textContent = "Unavailable"; list.replaceChildren(conflictNode("p", err.message, "muted small")); }
+}
+async function openSyncConflict(id) {
+  const panel = $("#sync-conflict-detail"); if (!panel) return;
+  panel.classList.remove("hidden"); panel.replaceChildren(conflictNode("p", "Loading…", "muted small"));
+  try {
+    const item = await api("/sync/conflicts/" + encodeURIComponent(id));
+    const local = item.local_snapshot || {}, remote = item.remote_snapshot || {};
+    const fields = Array.isArray(item.conflicting_fields) ? item.conflicting_fields : [];
+    panel.replaceChildren();
+    panel.appendChild(conflictNode("h4", "Patient " + item.entity_id + " — compare versions"));
+    const table = conflictNode("table", null, "table"), body = conflictNode("tbody"), head = conflictNode("tr");
+    ["Field", "Local value", "Remote value"].forEach(x => head.appendChild(conflictNode("th", x)));
+    const thead = conflictNode("thead"); thead.appendChild(head); table.appendChild(thead);
+    fields.forEach(field => { const tr = conflictNode("tr"); tr.appendChild(conflictNode("th", field));
+      [local[field], remote[field]].forEach(v => tr.appendChild(conflictNode("td", v == null ? "—" : JSON.stringify(v)))); body.appendChild(tr); });
+    table.appendChild(body); panel.appendChild(table);
+    panel.appendChild(conflictNode("h4", "Field-level merge"));
+    const selectors = new Map();
+    fields.forEach(field => {
+      const label = conflictNode("label", null, "check-row");
+      label.appendChild(conflictNode("span", field));
+      const select = conflictNode("select");
+      [["local", "Keep local"], ["remote", "Use remote"]].forEach(pair => {
+        const option = conflictNode("option", pair[1]); option.value = pair[0]; select.appendChild(option);
+      });
+      label.appendChild(select); panel.appendChild(label); selectors.set(field, select);
+    });
+    const actions = conflictNode("div", null, "chip-row");
+    const submit = (label, choice) => { const btn = conflictNode("button", label, "btn"); btn.type = "button";
+      btn.addEventListener("click", async () => { if (!window.confirm("Confirm " + choice + " for patient " + item.entity_id + "?")) return;
+        const payload = {choice};
+        if (choice === "field_merge") { payload.merged_fields = {}; selectors.forEach((select, field) => { payload.merged_fields[field] = select.value === "local" ? local[field] : remote[field]; }); }
+        btn.disabled = true; try { await api("/sync/conflicts/" + encodeURIComponent(id) + "/resolve", {method:"POST", body:JSON.stringify(payload)});
+          toast("Conflict resolved and audited.", "ok"); panel.classList.add("hidden"); await loadSyncConflicts();
+        } catch (err) { toast(err.message); btn.disabled = false; if (err.status === 409) await openSyncConflict(id); } }); actions.appendChild(btn); };
+    submit("Keep local", "keep_local"); submit("Apply remote", "apply_remote");
+    if (fields.length) submit("Save field merge", "field_merge");
+    submit("Reject", "reject");
+    const close = conflictNode("button", "Close", "btn ghost"); close.type="button"; close.addEventListener("click", () => panel.classList.add("hidden")); actions.appendChild(close); panel.appendChild(actions);
+  } catch (err) { panel.replaceChildren(conflictNode("p", err.message, "muted small")); }
+}
+$("#btn-sync-conflicts-refresh")?.addEventListener("click", loadSyncConflicts);
 
 async function loadBackups() {
   try {
@@ -1029,7 +1115,7 @@ async function loadStaff() {
       const cur = unitSel.value;
       unitSel.innerHTML = '<option value="">No department</option>' +
         deptCache.filter(d => d.kind !== "organization")
-          .map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+          .map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
       if ([...unitSel.options].some(o => o.value === cur)) unitSel.value = cur;
     }
     $$("#staff-table tbody tr").forEach((tr, i) => {
@@ -1207,7 +1293,7 @@ function renderPfDepartments() {
   if (!wrap) return;
   const list = deptCache.filter(d => d.kind !== "organization");
   wrap.innerHTML = list.length
-    ? list.map(d => `<label><input type="checkbox" value="${d.id}" ${
+    ? list.map(d => `<label><input type="checkbox" value="${esc(d.id)}" ${
         pfDeptIds.includes(d.id) ? "checked" : ""}> ${esc(d.name)}</label>`).join("")
     : '<span class="muted tiny">No departments yet — create some in Settings.</span>';
   wrap.querySelectorAll("input").forEach(cb => cb.addEventListener("change", () => {
@@ -1382,7 +1468,7 @@ function initTempAccessForm() {
   if (pick) {
     api("/patients?limit=500").then(rows => {
       pick.innerHTML = '<option value="">— choose a patient —</option>' +
-        rows.map(p => `<option value="${p.patient_id}">` +
+        rows.map(p => `<option value="${esc(p.patient_id)}">` +
           `${esc(p.name)} (${esc(p.patient_number || "#" + p.patient_id)})</option>`).join("");
     }).catch(() => {});
     pick.addEventListener("change", () => {
@@ -1402,7 +1488,7 @@ function renderPicked() {
   if (!wrap) return;
   wrap.innerHTML = tempPickedIds.map(p =>
     `<span class="picked-chip">${esc(p.label)}` +
-    `<button type="button" title="Remove" data-id="${p.id}">✕</button></span>`).join("");
+    `<button type="button" title="Remove" data-id="${esc(p.id)}">✕</button></span>`).join("");
   wrap.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
     tempPickedIds = tempPickedIds.filter(x => x.id !== parseInt(b.dataset.id, 10));
     renderPicked();
@@ -1460,10 +1546,10 @@ function fillTable(table, rows, columns, opts = {}) {
   thead.innerHTML = "";
   tbody.innerHTML = "";
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="${columns.length}" class="muted">Nothing here yet</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${esc(columns.length)}" class="muted">Nothing here yet</td></tr>`;
     return;
   }
-  thead.innerHTML = `<tr>${columns.map(c => `<th>${c[1]}</th>`).join("")}</tr>`;
+  thead.innerHTML = `<tr>${columns.map(c => `<th>${esc(c[1])}</th>`).join("")}</tr>`;
   for (const row of rows) {
     const tr = document.createElement("tr");
     tr.innerHTML = columns.map(c => {
@@ -1491,8 +1577,14 @@ function renderList(sel, items, render) {
 }
 
 function esc(value) {
+  // Escape text nodes and quoted HTML attributes. Escape ampersands first so
+  // the entities introduced below are not double-escaped.
   return String(value ?? "")
-    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function fmtDT(value) {
@@ -1527,24 +1619,20 @@ function toast(message) {
 /* ------------------------------------------------------------------ boot */
 
 (async function boot() {
-  const saved = localStorage.getItem("medflow.session");
-  if (saved) {
-    try {
-      const session = JSON.parse(saved);
-      state.token = session.token;
-      state.user = session.user;
-      await api("/auth/me");          // fails 401 if the token expired
-      enterApp();
-      return;
-    } catch {
-      localStorage.removeItem("medflow.session");
-      state.token = null;
-    }
-  }
-  /* no session: the sign-in gate in app.html is already visible */
+  localStorage.removeItem("medflow.session");
+  try {
+    const res = await fetch("/api/auth/me", {
+      headers: { "X-MedFlow-Web-Session": "1" },
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error("No browser session");
+    state.user = await res.json();
+    enterApp();
+    return;
+  } catch { state.user = null; }
   const gate = $("#login-gate");
   if (gate) gate.classList.remove("hidden");
-})();
+})();;
 
 /* ================================================================== bell */
 
@@ -1593,7 +1681,7 @@ async function loadNotifications() {
     const r = await api("/notifications?limit=50");
     list.innerHTML = r.items.length
       ? r.items.map(n => `
-        <div class="notif-item ${n.read ? "" : "unread"}" data-id="${n.notification_id}">
+        <div class="notif-item ${n.read ? "" : "unread"}" data-id="${esc(n.notification_id)}">
           <div class="n-title">${esc(n.title)}</div>
           ${n.body ? `<div class="n-body">${esc(n.body)}</div>` : ""}
           <div class="n-when">${esc((n.created_at || "").replace("T", " ").slice(0, 16))}
@@ -1621,7 +1709,8 @@ async function loadNotifications() {
 
 const SETTINGS_SECTIONS = [
   ["set-facility", "Facility"], ["set-departments", "Departments"],
-  ["set-template", "Record template"], ["set-backups", "Backups"],
+  ["set-template", "Record template"], ["set-sync-conflicts", "Sync conflicts"],
+  ["set-backups", "Backups"],
   ["set-cloud", "Off-site cloud copy"], ["set-session", "Session & sign-out"],
   ["set-bin", "Recycle bin"], ["set-staff", "Staff & colleagues"],
   ["set-onboarding", "Invites & approvals"], ["set-automation", "Automation rules"],
@@ -1633,7 +1722,7 @@ function initSettingsNav() {
   nav.innerHTML = SETTINGS_SECTIONS
     .map(([id, label]) => {
       const card = document.getElementById(id);
-      return card ? `<a href="#${id}" data-target="${id}">${label}</a>` : "";
+      return card ? `<a href="#${esc(id)}" data-target="${esc(id)}">${esc(label)}</a>` : "";
     }).join("");
   nav.querySelectorAll("a").forEach(a =>
     a.addEventListener("click", e => {

@@ -7,6 +7,7 @@ SQL; the sync engine below it can diff anything a repository can produce.
 from __future__ import annotations
 
 import sqlite3
+import json
 from typing import Any, Iterable, Sequence
 
 from app.models import (
@@ -183,6 +184,108 @@ class PatientRepository(_Repository):
             rows = self._query_all(f"SELECT * FROM {self.table}")
         return [Patient.from_row(r) for r in rows]
 
+    def sync_changes_page(self, since: int = 0, limit: int = 100,
+                          device_id: str | None = None,
+                          unit_id: int | None = None) -> dict:
+        """Return the latest immutable revision per patient at a bounded watermark."""
+        import json
+        since = max(0, int(since))
+        limit = max(1, min(int(limit), 500))
+        if unit_id is None:
+            raise ValueError("A workstation unit scope is required for synchronization")
+        high_watermark = int(self._query_one(
+            "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
+        )["seq"])
+        rows = self._query_all(
+            """
+            WITH latest AS (
+                SELECT patient_id, MAX(seq) AS seq
+                FROM sync_change_log
+                WHERE seq <= ?
+                GROUP BY patient_id
+                HAVING MAX(seq) > ?
+            )
+            SELECT l.seq, l.device_id, l.snapshot
+            FROM latest x
+            JOIN sync_change_log l ON l.patient_id = x.patient_id AND l.seq = x.seq
+            WHERE (
+                CAST(json_extract(l.snapshot, '$.origin_unit_id') AS INTEGER) IN (
+                    WITH RECURSIVE allowed(unit_id) AS (
+                        SELECT unit_id FROM units WHERE unit_id = ?
+                        UNION ALL
+                        SELECT u.unit_id FROM units u JOIN allowed a ON u.parent_id = a.unit_id
+                    ) SELECT unit_id FROM allowed
+                )
+                OR EXISTS (
+                    SELECT 1 FROM json_each(l.snapshot, '$.department_ids') d
+                    WHERE CAST(d.value AS INTEGER) IN (
+                        WITH RECURSIVE allowed(unit_id) AS (
+                            SELECT unit_id FROM units WHERE unit_id = ?
+                            UNION ALL
+                            SELECT u.unit_id FROM units u JOIN allowed a ON u.parent_id = a.unit_id
+                        ) SELECT unit_id FROM allowed
+                    )
+                )
+            )
+            ORDER BY l.seq
+            LIMIT ?
+            """,
+            (high_watermark, since, unit_id, unit_id, limit + 1),
+        )
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        cursor = int(page[-1]["seq"]) if page else high_watermark
+        if not has_more:
+            cursor = max(cursor, high_watermark)
+        patients = []
+        for row in page:
+            if device_id and row["device_id"] == device_id:
+                continue
+            if not row["snapshot"]:
+                raise RuntimeError("Sync revision snapshot is missing")
+            patients.append(json.loads(row["snapshot"]))
+        return {
+            "patients": patients,
+            "cursor": cursor,
+            "has_more": has_more,
+            "high_watermark": high_watermark,
+        }
+
+    def sync_removals_page(self, *, since: int = 0, limit: int = 100,
+                           device_id: str) -> dict:
+        """Return pending device-specific de-scope removal events."""
+        since = max(0, int(since))
+        limit = max(1, min(int(limit), 500))
+        high_watermark = int(self._query_one(
+            "SELECT COALESCE(MAX(event_seq), 0) AS seq FROM sync_scope_events WHERE device_id = ?",
+            (device_id,)
+        )["seq"])
+        rows = self._query_all(
+            """
+            SELECT event_seq, patient_number, action
+            FROM sync_scope_events
+            WHERE device_id = ? AND event_seq > ?
+            ORDER BY event_seq
+            LIMIT ?
+            """,
+            (device_id, since, limit + 1),
+        )
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        removal_cursor = int(page[-1]["event_seq"]) if page else high_watermark
+        if not has_more:
+            removal_cursor = max(removal_cursor, high_watermark)
+        removals = [
+            {"patient_number": r["patient_number"], "action": r["action"]}
+            for r in page
+        ]
+        return {
+            "removals": removals,
+            "removal_cursor": removal_cursor,
+            "has_more_removals": has_more,
+            "removal_high_watermark": high_watermark,
+        }
+
     # ------------------------------------------------------------------ #
     # writes
 
@@ -213,6 +316,8 @@ class PatientRepository(_Repository):
     def update(self, patient: Patient, fields: Iterable[str],
                bump_version: bool = True) -> Patient:
         """Persist the named fields of a patient; bumps version + updated_at."""
+        prior = self.get(patient.patient_id) if patient.patient_id else None
+        old_origin = prior.origin_unit_id if prior else None
         row = patient.to_row()
         updates = [f for f in fields if f in row]
         if not updates:
@@ -231,6 +336,9 @@ class PatientRepository(_Repository):
             f"UPDATE {self.table} SET {assignments} WHERE patient_id = ?",
             tuple(params),
         )
+        if "origin_unit_id" in updates and old_origin is not None and old_origin != patient.origin_unit_id:
+            from app.storage.access import emit_patient_descope_events
+            emit_patient_descope_events(self.db, patient.patient_id, patient.patient_number)
         return patient
 
     def soft_delete(self, patient_id: int, actor: str | None = None,
@@ -654,6 +762,137 @@ class AuditRepository(_Repository):
         return [PatientHistoryEvent.from_row(r) for r in rows]
 
 
+
+class SyncConflictRepository(_Repository):
+    """Durable conflict queue. Snapshots are retained for explicit review."""
+
+    def record_patient_conflict(self, *, fingerprint: str, entity_id: str,
+                                local_version: int, remote_version: int,
+                                local_snapshot: dict, remote_snapshot: dict,
+                                conflicting_fields: list[str],
+                                source_device_id: str | None,
+                                detected_at: str) -> int:
+        self._exec(
+            """
+            INSERT INTO sync_conflicts (
+                fingerprint, entity_type, entity_id, local_version,
+                remote_version, local_snapshot, remote_snapshot,
+                conflicting_fields, source_device_id, detected_at
+            ) VALUES (?, 'patient', ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fingerprint) DO NOTHING
+            """,
+            (fingerprint, entity_id, local_version, remote_version,
+             json.dumps(local_snapshot, sort_keys=True, default=str),
+             json.dumps(remote_snapshot, sort_keys=True, default=str),
+             json.dumps(sorted(conflicting_fields)), source_device_id,
+             detected_at),
+        )
+        row = self._query_one(
+            "SELECT conflict_id FROM sync_conflicts WHERE fingerprint = ?",
+            (fingerprint,),
+        )
+        return int(row["conflict_id"])
+
+    def list_pending(self, limit: int = 100) -> list[dict]:
+        return self._query_all(
+            "SELECT conflict_id, entity_type, entity_id, local_version, "
+            "remote_version, conflicting_fields, source_device_id, detected_at "
+            "FROM sync_conflicts WHERE status = 'pending' "
+            "ORDER BY detected_at, conflict_id LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        )
+
+    def get_conflict(self, conflict_id: int) -> dict | None:
+        row = self._query_one(
+            "SELECT * FROM sync_conflicts WHERE conflict_id = ?",
+            (int(conflict_id),),
+        )
+        if row:
+            for key in ("local_snapshot", "remote_snapshot",
+                        "conflicting_fields", "resolution_snapshot"):
+                if row.get(key):
+                    row[key] = json.loads(row[key])
+        return row
+
+    PATIENT_MERGE_FIELDS = frozenset({
+        "name", "age", "sex", "date_of_birth", "phone", "email", "address",
+        "blood_pressure", "heart_rate", "weight", "medical_history",
+        "diagnosis", "notes",
+    })
+
+    def resolve_patient_conflict_atomic(
+        self, conflict_id: int, *, actor: str, choice: str,
+        patients: "PatientRepository", audit: "AuditRepository",
+        merged_fields: dict | None = None,
+    ) -> str:
+        """Resolve and audit a patient conflict in one SQLite transaction."""
+        from app.models import AuditEvent, Patient
+        from app.utils.dates import to_iso, utcnow
+
+        if choice not in {"keep_local", "apply_remote", "field_merge", "reject"}:
+            raise ValueError("Unsupported resolution choice")
+        if choice == "field_merge":
+            if not isinstance(merged_fields, dict) or not merged_fields:
+                raise ValueError("field_merge requires non-empty merged_fields")
+            unknown = set(merged_fields) - self.PATIENT_MERGE_FIELDS
+            if unknown:
+                raise ValueError("Unsupported patient fields: " + ", ".join(sorted(unknown)))
+        elif merged_fields is not None:
+            raise ValueError("merged_fields is only valid for field_merge")
+
+        with self.db.transaction(immediate=True):
+            conflict = self._query_one(
+                "SELECT * FROM sync_conflicts WHERE conflict_id = ?",
+                (int(conflict_id),),
+            )
+            if conflict is None:
+                return "not_found"
+            if conflict["status"] != "pending":
+                return "already_resolved"
+            local_snapshot = json.loads(conflict["local_snapshot"])
+            remote_snapshot = json.loads(conflict["remote_snapshot"])
+            patient = patients.get_by_number(conflict["entity_id"])
+            resolution_snapshot = None
+            if choice in {"apply_remote", "field_merge"}:
+                if patient is None or int(patient.version) != int(conflict["local_version"]):
+                    raise RuntimeError("Patient changed since conflict detection; sync again")
+                if choice == "apply_remote":
+                    patients.upsert_from_remote(Patient.from_row(remote_snapshot))
+                    resolution_snapshot = remote_snapshot
+                else:
+                    conflicting = set(json.loads(conflict["conflicting_fields"]))
+                    if not set(merged_fields) <= conflicting:
+                        raise ValueError("Merge may only select recorded conflicting fields")
+                    for field, value in merged_fields.items():
+                        if value != local_snapshot.get(field) and value != remote_snapshot.get(field):
+                            raise ValueError(f"Merge value for {field} must match stored local or remote value")
+                    for field, value in merged_fields.items():
+                        if field == "date_of_birth" and value is not None:
+                            from datetime import date
+                            value = date.fromisoformat(value)
+                        setattr(patient, field, value)
+                    patients.update(patient, merged_fields.keys(), bump_version=True)
+                    resolution_snapshot = patient.to_row()
+            status = "rejected" if choice == "reject" else "resolved"
+            cur = self._exec(
+                "UPDATE sync_conflicts SET status = ?, resolved_by = ?, "
+                "resolved_at = ?, resolution_choice = ?, resolution_snapshot = ? "
+                "WHERE conflict_id = ? AND status = 'pending'",
+                (status, actor, to_iso(utcnow()), choice,
+                 json.dumps(resolution_snapshot, sort_keys=True, default=str)
+                 if resolution_snapshot is not None else None, int(conflict_id)),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError("Conflict was resolved concurrently")
+            audit.record(AuditEvent(
+                action="sync_conflict_resolved", entity_type="sync_conflict",
+                entity_id=str(conflict_id),
+                details=f"choice={choice}; patient={conflict['entity_id']}",
+                actor=actor,
+            ))
+            return status
+
+
 class TemplateRepository(_Repository):
     """Facility-defined chart fields and their per-patient values.
 
@@ -833,6 +1072,7 @@ def build_repositories(db) -> dict[str, Any]:
         "units": UnitRepository(db),
         "devices": DeviceRepository(db),
         "audit": AuditRepository(db),
+        "sync_conflicts": SyncConflictRepository(db),
         "stats": StatsRepository(db),
         "template": TemplateRepository(db),
     }

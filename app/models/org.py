@@ -78,7 +78,7 @@ class User:
             return []
 
 
-@serializable("registered_at")
+@serializable("registered_at", "revoked_at")
 @dataclass
 class Device:
     """A workstation known to MedFlow; used for sync attribution."""
@@ -88,6 +88,9 @@ class Device:
     unit_id: int | None = None
     last_seen_at: datetime | None = None
     registered_at: datetime | None = None
+    owner_user_id: int | None = None
+    revoked_at: datetime | None = None
+    scope_version: int = 1
     row_id: int | None = None
 
 

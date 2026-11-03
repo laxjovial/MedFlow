@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.storage.migrations import migrate
@@ -71,9 +72,42 @@ class Database:
         conn = self.connection()
         with self._write_lock:
             cur = conn.execute(sql, params)
-            if sql.lstrip().upper().startswith(self._DML_PREFIXES):
+            if (sql.lstrip().upper().startswith(self._DML_PREFIXES)
+                    and not getattr(self._local, "transaction_depth", 0)):
                 conn.commit()
             return cur
+
+    @contextmanager
+    def transaction(self, immediate: bool = True):
+        """Run repository writes atomically on this thread's connection."""
+        with self._write_lock:
+            conn = self.connection()
+            depth = getattr(self._local, "transaction_depth", 0)
+            if depth:
+                self._local.transaction_depth = depth + 1
+                try:
+                    yield conn
+                except Exception:
+                    self._local.transaction_failed = True
+                    raise
+                finally:
+                    self._local.transaction_depth = depth
+                return
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            self._local.transaction_depth = 1
+            self._local.transaction_failed = False
+            try:
+                yield conn
+                if self._local.transaction_failed:
+                    conn.rollback()
+                    raise RuntimeError("Nested transaction failed; outer transaction rolled back")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                self._local.transaction_depth = 0
+                self._local.transaction_failed = False
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)

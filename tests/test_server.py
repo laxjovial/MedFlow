@@ -102,7 +102,35 @@ def test_exchange_bundle_endpoint(client, auth, patient):
     assert bundle["patient"]["name"] == patient.name
 
 
-def test_sync_pull_returns_patients(client, auth, patient):
+def _bind_sync_test_session(client, auth, repos, device_id="workstation-A", unit_id=None):
+    from app.server.tokens import verify
+    from app.models import Unit
+    from app.utils.dates import to_iso, utcnow
+    token = auth["Authorization"].split(" ", 1)[1]
+    claims = verify(token, client.app.state.token_secret)
+    db = repos["patients"].db
+    if unit_id is None:
+        unit = repos["units"].insert(Unit(name="Sync Test Unit", kind="department"))
+        unit_id = unit.unit_id
+    db.execute("UPDATE users SET unit_id = ? WHERE user_id = ?",
+               (unit_id, claims["sub"]))
+    db.execute("UPDATE patients SET origin_unit_id = ?",
+               (unit_id,))
+    db.execute(
+        "INSERT INTO devices(device_id, label, unit_id, owner_user_id, registered_at, scope_version, revoked_at) "
+        "VALUES (?, ?, ?, ?, ?, 1, NULL) "
+        "ON CONFLICT(device_id) DO UPDATE SET "
+        "unit_id = excluded.unit_id, revoked_at = NULL",
+        (device_id, "Test workstation", unit_id, claims["sub"], to_iso(utcnow())),
+    )
+    db.execute(
+        "UPDATE auth_sessions SET client_type = 'desktop', device_id = ?, revoked_at = NULL WHERE jti = ?",
+        (device_id, claims["jti"]),
+    )
+
+
+def test_sync_pull_returns_patients(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos)
     response = client.get("/api/sync/pull", headers=auth)
     numbers = [p["patient_number"] for p in response.json()["patients"]]
     assert patient.patient_number in numbers
@@ -112,3 +140,352 @@ def test_index_page_served(client):
     response = client.get("/")
     assert response.status_code == 200
     assert "MedFlow" in response.text
+
+
+def test_public_health_exposes_only_liveness(client):
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_system_metrics_requires_authentication(client):
+    response = client.get("/api/system/metrics")
+    assert response.status_code == 401
+
+
+def test_system_metrics_requires_reports_permission(client, repos):
+    from app.services.security import SecurityService
+
+    viewer = SecurityService(repos["users"]).create_user(
+        "viewer", "Viewer User", "password123", "viewer"
+    )
+    response = client.post(
+        "/api/auth/login",
+        json={"username": viewer.username, "password": "password123"},
+    )
+    assert response.status_code == 200
+    token = response.json()["token"]
+    metrics = client.get(
+        "/api/system/metrics",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert metrics.status_code == 403
+
+
+def test_system_metrics_returns_counts_to_authorized_user(client, auth, patient):
+    response = client.get("/api/system/metrics", headers=auth)
+    assert response.status_code == 200
+    assert "facility" in response.json()
+    assert response.json()["patients"] >= 1
+
+
+def test_login_rate_limit_returns_429_and_retry_after(client):
+    for _ in range(5):
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "incorrect"},
+        )
+        assert response.status_code == 401
+    limited = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "incorrect"},
+    )
+    assert limited.status_code == 429
+    assert int(limited.headers["Retry-After"]) >= 1
+
+
+def test_signup_rate_limit_returns_429(client):
+    for i in range(5):
+        response = client.post(
+            "/api/auth/signup",
+            json={"username": f"signup-{i}", "display_name": "Signup User",
+                  "password": "a-long-enough-password"},
+        )
+        assert response.status_code == 201
+    limited = client.post(
+        "/api/auth/signup",
+        json={"username": "signup-extra", "display_name": "Signup User",
+              "password": "a-long-enough-password"},
+    )
+    assert limited.status_code == 429
+
+
+def test_pairing_redeem_rate_limit_returns_429(client):
+    for _ in range(5):
+        response = client.post(
+            "/api/pairing/redeem",
+            json={"code": "invalid-code", "device_id": "test-device"},
+        )
+        assert response.status_code == 401
+    limited = client.post(
+        "/api/pairing/redeem",
+        json={"code": "invalid-code", "device_id": "test-device"},
+    )
+    assert limited.status_code == 429
+
+
+
+def test_sync_pull_uses_incremental_cursor_and_echo_suppression(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    local = repos["patients"].get(patient.patient_id)
+    local.device_id = "workstation-A"
+    repos["patients"].update(local, ["device_id"], bump_version=False)
+    latest_change = repos["patients"]._query_one(
+        "SELECT device_id, snapshot FROM sync_change_log WHERE patient_id = ? ORDER BY seq DESC LIMIT 1",
+        (patient.patient_id,),
+    )
+    assert latest_change["device_id"] == "workstation-A"
+    assert '"device_id":"workstation-A"' in latest_change["snapshot"]
+    first = client.get(
+        "/api/sync/pull?since=0&limit=100&device_id=workstation-A",
+        headers=auth,
+    )
+    assert first.status_code == 200
+    payload = first.json()
+    assert patient.patient_number not in {
+        row["patient_number"] for row in payload["patients"]
+    }
+    assert payload["cursor"] >= 1
+    assert payload["has_more"] is False
+
+    local = repos["patients"].get(patient.patient_id)
+    local.device_id = "workstation-B"
+    repos["patients"].update(local, ["device_id"], bump_version=False)
+    second = client.get(
+        f"/api/sync/pull?since={payload['cursor']}&device_id=workstation-A",
+        headers=auth,
+    )
+    assert second.status_code == 200
+    assert patient.patient_number in {
+        row["patient_number"] for row in second.json()["patients"]
+    }
+
+
+def test_sync_pull_validates_cursor_and_page_size(client, auth, repos):
+    _bind_sync_test_session(client, auth, repos)
+    assert client.get("/api/sync/pull?since=-1", headers=auth).status_code == 422
+    assert client.get("/api/sync/pull?limit=0", headers=auth).status_code == 422
+    assert client.get("/api/sync/pull?limit=501", headers=auth).status_code == 422
+
+
+def test_sync_push_reports_conflicts_separately_from_accepted(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    from datetime import datetime
+    from app.models import Patient
+
+    local = repos["patients"].get(patient.patient_id)
+    local.device_id = "workstation-A"
+    local.version = 2
+    repos["patients"].update(
+        local, ["device_id", "version"], bump_version=False
+    )
+    repos["patients"].db.connection().execute(
+        "UPDATE patients SET updated_at = ? WHERE patient_id = ?",
+        ("2026-10-28T10:00:00", patient.patient_id),
+    )
+    repos["patients"].db.connection().commit()
+    local = repos["patients"].get(patient.patient_id)
+    remote = Patient.from_row(local.to_row())
+    remote.name = "Remote conflicting name"
+    remote.version = 3
+    remote.updated_at = datetime(2026, 10, 29, 10, 0, 0)
+    remote.device_id = "workstation-A"
+
+    response = client.post("/api/sync/push", headers=auth, json={
+        "device_id": "workstation-A",
+        "batch_id": "batch-conflict-1",
+        "patients": [remote.to_row()],
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] == 0
+    assert body["accepted_patient_numbers"] == []
+    assert body["conflicted_patient_numbers"] == [patient.patient_number]
+    assert body["batch_id"] == "batch-conflict-1"
+    assert isinstance(body["server_cursor"], int)
+
+
+
+def test_sync_pull_is_limited_to_device_unit_scope(client, auth, repos, patient):
+    from app.models import Unit
+    _bind_sync_test_session(client, auth, repos)
+    device_unit = repos["users"].db.execute("SELECT unit_id FROM devices WHERE device_id = ?", ("workstation-A",)).fetchone()["unit_id"]
+    other = repos["units"].insert(Unit(name="Other Department", kind="department"))
+    patient.origin_unit_id = other.unit_id
+    repos["patients"].update(patient, ["origin_unit_id"])
+    response = client.get("/api/sync/pull", headers=auth)
+    assert response.status_code == 200, response.text
+    assert patient.patient_number not in [row["patient_number"] for row in response.json()["patients"]]
+    assert response.json()["scope_unit_id"] == device_unit
+    assert response.json()["scope_version"] == 1
+
+
+def test_revoking_workstation_invalidates_bound_session(client, auth, repos):
+    _bind_sync_test_session(client, auth, repos)
+    response = client.post("/api/org/devices/workstation-A/revoke", headers=auth)
+    assert response.status_code == 200, response.text
+    assert response.json()["revoked"] is True
+    assert client.get("/api/sync/pull", headers=auth).status_code == 401
+
+
+def test_sync_rejects_device_id_spoofing(client, auth, repos):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    response = client.get(
+        "/api/sync/pull?device_id=workstation-B", headers=auth
+    )
+    assert response.status_code == 403
+    response = client.post("/api/sync/push", headers=auth, json={
+        "device_id": "workstation-B",
+        "batch_id": "spoofed-batch",
+        "patients": [],
+    })
+    assert response.status_code == 403
+
+
+def test_sync_push_batch_is_idempotent(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    from app.models import Patient
+    remote = Patient.from_row(patient.to_row())
+    remote.patient_id = None
+    remote.patient_number = "MF-998877"
+    remote.name = "First delivery"
+    remote.device_id = "workstation-A"
+    payload = {
+        "device_id": "workstation-A",
+        "batch_id": "stable-batch-001",
+        "patients": [remote.to_row()],
+    }
+    first = client.post("/api/sync/push", headers=auth, json=payload)
+    assert first.status_code == 200, first.text
+    second = client.post("/api/sync/push", headers=auth, json=payload)
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    changed_retry = dict(payload)
+    changed_retry["patients"] = []
+    rejected = client.post("/api/sync/push", headers=auth, json=changed_retry)
+    assert rejected.status_code == 409
+    stored = repos["patients"].get_by_number("MF-998877")
+    assert stored is not None
+    assert stored.name == "First delivery"
+    receipt_count = repos["patients"]._query_one(
+        "SELECT COUNT(*) AS n FROM sync_batches WHERE device_id = ? AND batch_id = ?",
+        ("workstation-A", "stable-batch-001"),
+    )["n"]
+    assert receipt_count == 1
+
+
+def test_sync_pull_returns_immutable_revision_snapshots(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    start = repos["patients"]._query_one(
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
+    )["seq"]
+    local = repos["patients"].get(patient.patient_id)
+    local.name = "Revision one"
+    repos["patients"].update(local, ["name"])
+    first_revision = repos["patients"]._query_one(
+        "SELECT seq, snapshot FROM sync_change_log WHERE patient_id = ? ORDER BY seq DESC LIMIT 1",
+        (patient.patient_id,),
+    )
+    local = repos["patients"].get(patient.patient_id)
+    local.name = "Revision two"
+    repos["patients"].update(local, ["name"])
+    stored_first = repos["patients"]._query_one(
+        "SELECT snapshot FROM sync_change_log WHERE seq = ?",
+        (first_revision["seq"],),
+    )
+    assert '"name":"Revision one"' in stored_first["snapshot"]
+    response = client.get(
+        f"/api/sync/pull?since={start}&limit=10&device_id=workstation-A",
+        headers=auth,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["patients"][0]["name"] == "Revision two"
+    assert body["has_more"] is False
+
+
+def test_sync_pull_propagates_patient_tombstone(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    start = repos["patients"]._query_one(
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
+    )["seq"]
+    assert repos["patients"].soft_delete(patient.patient_id, actor="tester",
+                                         device_id="server")
+    response = client.get(
+        f"/api/sync/pull?since={start}&device_id=workstation-A",
+        headers=auth,
+    )
+    assert response.status_code == 200
+    rows = response.json()["patients"]
+    tombstone = next(row for row in rows
+                     if row["patient_number"] == patient.patient_number)
+    assert tombstone["deleted"] == 1
+
+
+def test_sync_pull_emits_removal_events_and_supports_scope_reset(client, auth, repos, patient):
+    from app.models import Unit
+    u1 = repos["units"].insert(Unit(name="Dept A", kind="department"))
+    u2 = repos["units"].insert(Unit(name="Dept B", kind="department"))
+
+    # Workstation A assigned to Dept A
+    _bind_sync_test_session(client, auth, repos, "workstation-A", unit_id=u1.unit_id)
+
+    # Initial state: patient belongs to Dept A
+    local = repos["patients"].get(patient.patient_id)
+    local.origin_unit_id = u1.unit_id
+    repos["patients"].update(local, ["origin_unit_id"])
+
+    # Workstation A pulls and receives patient
+    pull1 = client.get("/api/sync/pull?since=0&device_id=workstation-A", headers=auth)
+    assert pull1.status_code == 200
+    p1_data = pull1.json()
+    assert patient.patient_number in {p["patient_number"] for p in p1_data["patients"]}
+    assert p1_data["removals"] == []
+    curr_cursor = p1_data["cursor"]
+    curr_rem_cursor = p1_data["removal_cursor"]
+
+    # Transfer patient to Dept B (origin_unit_id reassigned)
+    local = repos["patients"].get(patient.patient_id)
+    local.origin_unit_id = u2.unit_id
+    repos["patients"].update(local, ["origin_unit_id"])
+
+    # Workstation A pulls with its previous cursors
+    pull2 = client.get(
+        f"/api/sync/pull?since={curr_cursor}&removal_since={curr_rem_cursor}&device_id=workstation-A",
+        headers=auth,
+    )
+    assert pull2.status_code == 200
+    p2_data = pull2.json()
+    # Patient is not in new changes for Dept A
+    assert patient.patient_number not in {p["patient_number"] for p in p2_data["patients"]}
+    # De-scope removal event is delivered!
+    assert len(p2_data["removals"]) == 1
+    assert p2_data["removals"][0]["patient_number"] == patient.patient_number
+    assert p2_data["removals"][0]["action"] == "de_scoped"
+    # Verify no clinical leak in removal payload
+    assert set(p2_data["removals"][0].keys()) == {"patient_number", "action"}
+
+    # Scope Reset Test: admin reassigns workstation-A to Dept B (bumps scope_version)
+    scope_patch = client.patch(
+        "/api/org/devices/workstation-A/scope",
+        headers=auth,
+        json={"unit_id": u2.unit_id},
+    )
+    assert scope_patch.status_code == 200
+    new_scope_version = scope_patch.json()["scope_version"]
+    assert new_scope_version >= 2
+
+    # Re-bind session because scope reassignment revokes existing workstation sessions
+    _bind_sync_test_session(client, auth, repos, "workstation-A", unit_id=u2.unit_id)
+
+    # Workstation calls pull presenting old scope_version=1
+    stale_pull = client.get(
+        "/api/sync/pull?since=0&scope_version=1&device_id=workstation-A",
+        headers=auth,
+    )
+    assert stale_pull.status_code == 200
+    stale_data = stale_pull.json()
+    assert stale_data["reset_required"] is True
+    assert stale_data["scope_version"] == new_scope_version
+    assert stale_data["patients"] == []
+    assert stale_data["removals"] == []

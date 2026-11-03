@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 11
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -43,7 +43,10 @@ TABLES: tuple[str, ...] = (
         label TEXT,
         unit_id INTEGER REFERENCES units(unit_id),
         last_seen_at TEXT,
-        registered_at TEXT
+        registered_at TEXT,
+        owner_user_id INTEGER REFERENCES users(user_id),
+        revoked_at TEXT,
+        scope_version INTEGER NOT NULL DEFAULT 1
     )
     """,
     """
@@ -54,6 +57,46 @@ TABLES: tuple[str, ...] = (
         starts_at TEXT,
         ends_at TEXT
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+        jti TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        client_type TEXT NOT NULL DEFAULT 'api',
+        issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER,
+        device_id TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_active
+    ON auth_sessions(user_id, revoked_at, expires_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sync_conflicts (
+        conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint TEXT NOT NULL UNIQUE,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        local_version INTEGER NOT NULL,
+        remote_version INTEGER NOT NULL,
+        local_snapshot TEXT NOT NULL,
+        remote_snapshot TEXT NOT NULL,
+        conflicting_fields TEXT NOT NULL,
+        source_device_id TEXT,
+        detected_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending', 'resolved', 'rejected')),
+        resolved_by TEXT,
+        resolved_at TEXT,
+        resolution_choice TEXT,
+        resolution_snapshot TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status_detected
+    ON sync_conflicts(status, detected_at)
     """,
     # --- patients ---
     """
@@ -89,6 +132,76 @@ TABLES: tuple[str, ...] = (
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_patients_name ON patients(name)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sync_change_log (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL,
+        version INTEGER NOT NULL,
+        device_id TEXT,
+        changed_at TEXT,
+        snapshot TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sync_change_log_patient
+    ON sync_change_log(patient_id, seq)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sync_batches (
+        device_id TEXT NOT NULL,
+        batch_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        response_json TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(device_id, batch_id)
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_patients_sync_insert
+    AFTER INSERT ON patients
+    BEGIN
+        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at, snapshot)
+        VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at,
+            json_object(
+                'patient_id', NEW.patient_id, 'patient_number', NEW.patient_number,
+                'name', NEW.name, 'age', NEW.age, 'sex', NEW.sex,
+                'date_of_birth', NEW.date_of_birth, 'phone', NEW.phone,
+                'email', NEW.email, 'address', NEW.address,
+                'blood_pressure', NEW.blood_pressure, 'heart_rate', NEW.heart_rate,
+                'weight', NEW.weight, 'medical_history', NEW.medical_history,
+                'diagnosis', NEW.diagnosis, 'notes', NEW.notes,
+                'version', NEW.version, 'created_at', NEW.created_at,
+                'updated_at', NEW.updated_at, 'created_by', NEW.created_by,
+                'updated_by', NEW.updated_by, 'device_id', NEW.device_id,
+                'origin_unit_id', NEW.origin_unit_id, 'deleted', NEW.deleted,
+                'department_ids', json(COALESCE((SELECT json_group_array(unit_id) FROM patient_departments WHERE patient_id = NEW.patient_id), '[]')),
+                'change_id', NEW.change_id
+            ));
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_patients_sync_update
+    AFTER UPDATE ON patients
+    BEGIN
+        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at, snapshot)
+        VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at,
+            json_object(
+                'patient_id', NEW.patient_id, 'patient_number', NEW.patient_number,
+                'name', NEW.name, 'age', NEW.age, 'sex', NEW.sex,
+                'date_of_birth', NEW.date_of_birth, 'phone', NEW.phone,
+                'email', NEW.email, 'address', NEW.address,
+                'blood_pressure', NEW.blood_pressure, 'heart_rate', NEW.heart_rate,
+                'weight', NEW.weight, 'medical_history', NEW.medical_history,
+                'diagnosis', NEW.diagnosis, 'notes', NEW.notes,
+                'version', NEW.version, 'created_at', NEW.created_at,
+                'updated_at', NEW.updated_at, 'created_by', NEW.created_by,
+                'updated_by', NEW.updated_by, 'device_id', NEW.device_id,
+                'origin_unit_id', NEW.origin_unit_id, 'deleted', NEW.deleted,
+                'change_id', NEW.change_id
+            ));
+    END
     """,
     # --- clinical chart ---
     """
@@ -266,6 +379,22 @@ TABLES: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_pdept_unit ON patient_departments(unit_id)
     """,
     """
+    CREATE TRIGGER IF NOT EXISTS trg_patient_department_sync_insert
+    AFTER INSERT ON patient_departments
+    BEGIN
+        UPDATE patients SET version = version + 1, updated_at = datetime('now')
+        WHERE patient_id = NEW.patient_id;
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_patient_department_sync_delete
+    AFTER DELETE ON patient_departments
+    BEGIN
+        UPDATE patients SET version = version + 1, updated_at = datetime('now')
+        WHERE patient_id = OLD.patient_id;
+    END
+    """,
+    """
     CREATE TABLE IF NOT EXISTS notifications (
         notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
@@ -302,6 +431,20 @@ TABLES: tuple[str, ...] = (
         key TEXT PRIMARY KEY,
         value TEXT
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sync_scope_events (
+        event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        patient_id INTEGER,
+        patient_number TEXT NOT NULL,
+        action TEXT NOT NULL DEFAULT 'de_scoped',
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sync_scope_events_device_seq
+    ON sync_scope_events(device_id, event_seq)
     """,
 )
 

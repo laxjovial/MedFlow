@@ -23,7 +23,7 @@ from app.repositories.sqlite.legacy import (
     has_legacy_schema,
     split_name,
 )
-from app.repositories.sqlite.migrations import MigrationRunner
+from app.repositories.sqlite.migrations import Migration, MigrationRunner
 from app.repositories.sqlite.schema import SCHEMA_VERSION
 
 LEGACY_DDL = """
@@ -139,6 +139,33 @@ class TestFreshDatabase:
 
         with pytest.raises(MigrationError, match="newer"):
             MigrationRunner(handle).migrate()
+
+    def test_failed_migration_rolls_back_schema_and_version(self, app_settings) -> None:
+        from app.core.exceptions import MigrationError
+
+        def fail_after_ddl(connection, context) -> None:
+            connection.execute("CREATE TABLE partial_migration (id INTEGER PRIMARY KEY)")
+            raise RuntimeError("simulated interruption")
+
+        handle = Database(app_settings.database_path)
+        runner = MigrationRunner(
+            handle,
+            migrations=(Migration(1, "failure injection", fail_after_ddl),),
+        )
+        with pytest.raises(MigrationError, match="failed"):
+            runner.migrate()
+
+        with handle.connection() as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+            tables = {
+                row["name"]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        assert "partial_migration" not in tables
+        assert "schema_migrations" not in tables
+
 
 
 # ---------- detection ----------

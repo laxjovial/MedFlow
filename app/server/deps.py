@@ -11,6 +11,8 @@ from fastapi import Depends, HTTPException, Request
 
 from app.errors import AuthorizationError, NotFoundError
 from app.server.tokens import TokenError, verify
+from app.server.session_registry import SessionRegistry
+from app.server.cookie_sessions import SESSION_COOKIE, is_web_session_request, require_cookie_csrf
 from app.services.patients import PatientService
 from app.services.records import RecordsService, TemplateService
 from app.services.reports import ReportsService
@@ -19,7 +21,7 @@ from app.utils.dates import to_iso, utcnow
 
 
 def current_user(request: Request) -> dict:
-    """Validate the bearer token, load the live user, derive permissions.
+    """Validate a bearer or explicitly opted-in browser cookie session.
 
     Permissions are resolved from the database on every request (not baked
     into the token), so a role change applies immediately, a deactivated
@@ -27,18 +29,57 @@ def current_user(request: Request) -> dict:
     cut off mid-session rather than at next login.
     """
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    # Explicit bearer credentials take precedence; invalid bearer never falls
+    # back to ambient cookies.
+    if auth:
+        if not auth.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Invalid authorization scheme")
+        token = auth.removeprefix("Bearer ").strip()
+        try:
+            payload = verify(token, request.app.state.token_secret)
+        except TokenError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+    elif is_web_session_request(request):
+        token = request.cookies.get(SESSION_COOKIE, "")
+        if not token:
+            raise HTTPException(status_code=401, detail="Missing browser session")
+        require_cookie_csrf(request, token)
+        try:
+            payload = verify(token, request.app.state.token_secret)
+        except TokenError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+    else:
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = auth.removeprefix("Bearer ").strip()
-    try:
-        payload = verify(token, request.app.state.token_secret)
-    except TokenError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
 
-    user = request.app.state.repos["users"].get(payload.get("sub", 0))
+    # Tokens without a persisted jti are legacy pre-registry credentials and
+    # are intentionally rejected after the session-registry migration.
+    jti = payload.get("jti")
+    registry = SessionRegistry(request.app.state.repos["users"].db)
+    session = registry.get(jti) if jti else None
+    if not session or session["revoked_at"] is not None or int(session["expires_at"]) < int(__import__("time").time()):
+        raise HTTPException(status_code=401, detail="Session is revoked or expired")
+    if int(session["user_id"]) != int(payload.get("sub", 0)):
+        raise HTTPException(status_code=401, detail="Session identity mismatch")
+    bound_device = session.get("device_id")
+    if session.get("client_type") == "desktop":
+        if not bound_device:
+            raise HTTPException(status_code=401, detail="Desktop device binding is invalid")
+        device_row = request.app.state.repos["users"].db.execute(
+            "SELECT owner_user_id, revoked_at FROM devices WHERE device_id = ?",
+            (bound_device,),
+        ).fetchone()
+        if (not device_row or device_row["revoked_at"] is not None
+                or (device_row["owner_user_id"] is not None
+                    and int(device_row["owner_user_id"]) != int(session["user_id"]))):
+            raise HTTPException(status_code=401, detail="Workstation is revoked or no longer assigned to this account")
+
+    user_id = int(payload.get("sub", 0))
+    user = request.app.state.repos["users"].get(user_id)
     if not user or not user.active:
+        registry.revoke_user(user_id)
         raise HTTPException(status_code=401, detail="Account is inactive")
     if user.is_expired(to_iso(utcnow())):
+        registry.revoke_user(user_id)
         raise HTTPException(status_code=401, detail="Temporary access has expired")
     return {
         "sub": user.user_id,
@@ -46,6 +87,10 @@ def current_user(request: Request) -> dict:
         "display_name": user.display_name,
         "role": user.role,
         "remember": bool(payload.get("remember")),
+        "jti": jti,
+        "client_type": session["client_type"],
+        "device_id": bound_device,
+        "token_expires_at": int(payload.get("exp", 0)),
         "temporary": user.role == "temporary",
         "scope_patient_ids": user.scoped_patient_ids() if user.role == "temporary" else None,
         "expires_at": user.expires_at,

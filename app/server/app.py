@@ -30,8 +30,11 @@ from app.server.deps import (
     require,
 )
 from app.server.pairing import PairingError, pairing
+from app.server.rate_limit import SlidingWindowRateLimiter
 from app.server import sessions as sessions_policy
-from app.server.tokens import issue
+from app.server.tokens import issue, verify
+from app.server.session_registry import SessionRegistry
+from app.server.cookie_sessions import is_web_session_request, set_browser_session, clear_browser_session
 from app.services.offsite import (
     OffsiteBackupService,
     OffsiteError,
@@ -82,7 +85,7 @@ class PairingRedeem(BaseModel):
     """Body for redeeming a pairing code (desktop side)."""
 
     code: str
-    device_id: str = "workstation-01"
+    device_id: str
 
 
 class AutomationRuleIn(BaseModel):
@@ -257,6 +260,7 @@ class UserPatch(BaseModel):
 class SyncPush(BaseModel):
     device_id: str
     change_id: str | None = None
+    batch_id: str | None = None
     sent_at: str | None = None
     patients: list[dict] = []
 
@@ -292,6 +296,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
     app.state.db = db
     app.state.repos = repos
     app.state.google_client_id = google_client_id
+    # Process-local protection for single-instance deployments. Multi-worker deployments
+    # must use a shared limiter at the gateway or a shared backing store.
+    app.state.auth_rate_limiter = SlidingWindowRateLimiter()
     from app.services.reports import ReportsService
     app.state.report_service = ReportsService(repos) if repos else None
     # Automation rules live for the server's lifetime (same as a desktop
@@ -302,10 +309,65 @@ def create_app(config: Config | None = None, db=None, repos=None,
 
     app.add_exception_handler(MedFlowError, error_handler)
 
+    def _limit_auth(request: Request, scope: str, limit: int, window_seconds: int = 60,
+                    identity: str | None = None) -> None:
+        client_host = request.client.host if request.client else "unknown"
+        keys = [f"{scope}:ip:{client_host}"]
+        if identity:
+            keys.append(f"{scope}:identity:{identity}")
+        retry_after = None
+        for key in keys:
+            wait = request.app.state.auth_rate_limiter.consume(
+                key, limit=limit, window_seconds=window_seconds
+            )
+            if wait is not None:
+                retry_after = max(retry_after or 0, wait)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many attempts. Please wait before trying again.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    def _require_same_origin(request: Request) -> None:
+        """Require a same-origin Origin on browser authentication submissions."""
+        from urllib.parse import urlsplit
+        origin = request.headers.get("Origin")
+        if not origin:
+            raise HTTPException(status_code=403, detail="Missing Origin header")
+        parsed = urlsplit(origin)
+        if parsed.scheme != request.url.scheme or parsed.netloc != request.url.netloc:
+            raise HTTPException(status_code=403, detail="Cross-origin request rejected")
+
+    def _issue_registered_token(request: Request, payload: dict, ttl: int,
+                                client_type: str = "api", device_id: str | None = None) -> str:
+        token = issue(payload, request.app.state.token_secret, ttl=ttl)
+        claims = verify(token, request.app.state.token_secret)
+        SessionRegistry(request.app.state.repos["users"].db).register(
+            claims["jti"], int(claims["sub"]), int(claims["exp"]),
+            client_type, device_id=device_id,
+        )
+        return token
+
+    def _auth_response(request: Request, token: str, ttl: int, user_data: dict,
+                       remember: bool = False):
+        if is_web_session_request(request):
+            _require_same_origin(request)
+            response = JSONResponse({
+                "session": {"remember": remember, "expires_in": ttl},
+                "user": user_data,
+            })
+            set_browser_session(response, request, token, ttl)
+            return response
+        return {"token": token, "user": user_data}
+
     # --------------------------------------------------------------- auth
 
     @app.post("/api/auth/login", tags=["auth"])
     def login(body: LoginRequest, request: Request):
+        if is_web_session_request(request):
+            _require_same_origin(request)
+        _limit_auth(request, "login", limit=5, identity=body.username.strip().casefold())
         users = request.app.state.repos["users"]
         from app.services.security import SecurityService
         security = SecurityService(users)
@@ -317,22 +379,20 @@ def create_app(config: Config | None = None, db=None, repos=None,
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
         ttl = sessions_policy.ttl_for(policy, body.remember)
-        token = issue({
+        token = _issue_registered_token(request, {
             "sub": user.user_id,
             "username": user.username,
             "role": user.role,
             "display_name": user.display_name,
             "remember": body.remember,
-        }, secret, ttl=ttl)
-        return {
-            "token": token,
-            "session": {"remember": body.remember, "expires_in": ttl},
-            "user": {
-                "id": user.user_id, "username": user.username,
-                "display_name": user.display_name, "role": user.role,
-                "permissions": sorted(security.permissions(user)),
-            },
-        }
+        }, ttl, "browser" if is_web_session_request(request) else "api")
+        return _auth_response(request, token, ttl, {
+            "id": user.user_id, "username": user.username,
+            "display_name": user.display_name, "role": user.role,
+            "permissions": sorted(security.permissions(user)),
+            "temporary": user.role == "temporary",
+            "expires_at": user.expires_at,
+        }, remember=body.remember)
 
     @app.post("/api/auth/signup", status_code=201, tags=["auth"])
     def signup(body: SignupRequest, request: Request = None):
@@ -342,6 +402,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
         after that signs up as a viewer pending staff promotion. Temporarily
         closable via config for private deployments.
         """
+        if is_web_session_request(request):
+            _require_same_origin(request)
+        _limit_auth(request, "signup", limit=5)
         cfg = request.app.state.config
         from app.services.onboarding import PENDING_ROLE
         if body.invite_code:
@@ -371,14 +434,16 @@ def create_app(config: Config | None = None, db=None, repos=None,
         secret = request.app.state.token_secret
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
-        token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role}, secret,
-                      ttl=policy.normal_ttl)
-        return {"token": token, "user": {
+        token = _issue_registered_token(request, {
+            "sub": user.user_id, "username": user.username, "role": user.role,
+        }, policy.normal_ttl, "browser" if is_web_session_request(request) else "api")
+        return _auth_response(request, token, policy.normal_ttl, {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
             "permissions": sorted(security.permissions(user)),
-        }}
+            "temporary": user.role == "temporary",
+            "expires_at": user.expires_at,
+        }, remember=False)
 
     @app.get("/api/auth/config", tags=["auth"])
     def auth_config(request: Request = None):
@@ -392,6 +457,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
     @app.post("/api/auth/google", tags=["auth"])
     def google_login(body: GoogleLoginRequest, request: Request = None):
         """Verify a Google ID token and sign in (or provision) the user."""
+        if is_web_session_request(request):
+            _require_same_origin(request)
+        _limit_auth(request, "google-login", limit=5)
         if not request.app.state.google_client_id:
             raise HTTPException(status_code=501, detail="Google sign-in not configured")
         from app.server.google import verify_google_token
@@ -407,19 +475,24 @@ def create_app(config: Config | None = None, db=None, repos=None,
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
         ttl = sessions_policy.ttl_for(policy, body.remember)
-        token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role, "remember": body.remember}, secret, ttl=ttl)
-        return {"token": token, "user": {
+        token = _issue_registered_token(request, {
+            "sub": user.user_id, "username": user.username,
+            "role": user.role, "remember": body.remember,
+        }, ttl, "browser" if is_web_session_request(request) else "api")
+        return _auth_response(request, token, ttl, {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
             "permissions": sorted(security.permissions(user)),
-        }}
+            "temporary": user.role == "temporary",
+            "expires_at": user.expires_at,
+        }, remember=body.remember)
 
     # ------------------------------------------------- desktop pairing
 
     @app.post("/api/pairing/code", status_code=201, tags=["auth"])
     def pairing_code(body: PairingStart, user=Depends(current_user),
                      request: Request = None):
+        _limit_auth(request, "pairing-create", limit=5, identity=str(user["sub"]))
         """Create a one-time code so the desktop app can pair with this server.
 
         The signed-in user runs the desktop app, types this code there, and the
@@ -454,6 +527,10 @@ def create_app(config: Config | None = None, db=None, repos=None,
     @app.post("/api/pairing/redeem", tags=["auth"])
     def pairing_redeem(body: PairingRedeem, request: Request = None):
         """Exchange a one-time pairing code for a session (desktop side)."""
+        _limit_auth(request, "pairing-redeem", limit=5)
+        device_id = body.device_id.strip()
+        if not device_id or len(device_id) > 128:
+            raise HTTPException(status_code=422, detail="device_id must be 1-128 characters")
         try:
             identity = pairing.redeem_code(body.code)
         except PairingError as exc:
@@ -467,8 +544,36 @@ def create_app(config: Config | None = None, db=None, repos=None,
         secret = request.app.state.token_secret
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
-        token = issue({"sub": user.user_id, "username": user.username,
-                       "role": user.role}, secret, ttl=policy.remember_ttl)
+        db = request.app.state.repos["users"].db
+        existing_device = db.execute(
+            "SELECT owner_user_id, revoked_at FROM devices WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        if existing_device and existing_device["revoked_at"] is not None:
+            raise HTTPException(status_code=403, detail="This workstation was revoked; an administrator must reassign or reactivate it before pairing")
+        if (existing_device and existing_device["owner_user_id"] is not None
+                and int(existing_device["owner_user_id"]) != int(user.user_id)):
+            raise HTTPException(status_code=403, detail="This workstation is assigned to another account")
+        from app.utils.dates import to_iso, utcnow
+        registry = SessionRegistry(db)
+        registry.revoke_device(device_id)
+        db.execute(
+            """
+            INSERT INTO devices
+                (device_id, label, registered_at, owner_user_id, unit_id, revoked_at)
+            VALUES (?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(device_id) DO UPDATE SET
+                owner_user_id = excluded.owner_user_id,
+                unit_id = COALESCE(devices.unit_id, excluded.unit_id),
+                label = excluded.label
+            """,
+            (device_id, "Paired desktop workstation", to_iso(utcnow()),
+             user.user_id, user.unit_id),
+        )
+        token = _issue_registered_token(request, {
+            "sub": user.user_id, "username": user.username, "role": user.role,
+            "device_id": device_id,
+        }, policy.remember_ttl, "desktop", device_id=device_id)
         return {"token": token, "identity": identity, "user": {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
@@ -514,6 +619,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
             raise HTTPException(status_code=404, detail="No such temporary user")
         target.active = False
         request.app.state.repos["users"].update(target, ["active"])
+        SessionRegistry(request.app.state.repos["users"].db).revoke_user(user_id)
         return {"ok": True}
 
     @app.get("/api/auth/me", tags=["auth"])
@@ -521,7 +627,17 @@ def create_app(config: Config | None = None, db=None, repos=None,
         return {
             "id": user["sub"], "username": user["username"],
             "display_name": user["display_name"], "role": user["role"],
+            "permissions": user["permissions"],
+            "temporary": user["temporary"],
+            "expires_at": user["expires_at"],
         }
+
+    @app.post("/api/auth/logout", tags=["auth"])
+    def logout(request: Request, user=Depends(current_user)):
+        SessionRegistry(request.app.state.repos["users"].db).revoke(user["jti"])
+        response = JSONResponse({"ok": True})
+        clear_browser_session(response, request)
+        return response
 
     @app.post("/api/auth/refresh", tags=["auth"])
     def refresh_session(request: Request = None, user=Depends(current_user)):
@@ -543,7 +659,18 @@ def create_app(config: Config | None = None, db=None, repos=None,
         }
         rolled = sessions_policy.refreshed_payload(payload, policy)
         ttl = sessions_policy.ttl_for(policy, remember)
-        token = issue(payload, request.app.state.token_secret, ttl=ttl)
+        if not rolled:
+            ttl = max(1, int(user.get("token_expires_at", 0)) - int(__import__("time").time()))
+        registry = SessionRegistry(request.app.state.repos["users"].db)
+        registry.revoke(user["jti"])
+        token = _issue_registered_token(
+            request, payload, ttl,
+            "browser" if is_web_session_request(request) else "api",
+        )
+        if is_web_session_request(request) and request.cookies.get("medflow_session"):
+            response = JSONResponse({"refreshed": bool(rolled), "expires_in": ttl})
+            set_browser_session(response, request, token, ttl)
+            return response
         return {"token": token, "refreshed": bool(rolled), "expires_in": ttl}
 
     @app.get("/api/settings/session", tags=["settings"])
@@ -1013,6 +1140,53 @@ def create_app(config: Config | None = None, db=None, repos=None,
         svc = OrgService(repos, SecurityService(repos["users"]))
         return svc.create_unit(body.name, body.kind, body.parent_id).to_row()
 
+    @app.get("/api/org/devices", tags=["org"])
+    def list_workstations(user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        rows = request.app.state.repos["users"].db.execute(
+            "SELECT device_id, label, unit_id, owner_user_id, registered_at, last_seen_at, revoked_at, scope_version FROM devices ORDER BY registered_at DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @app.patch("/api/org/devices/{device_id}/scope", tags=["org"])
+    def assign_workstation_scope(device_id: str, body: dict, user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        unit_id = body.get("unit_id")
+        if not isinstance(unit_id, int):
+            raise HTTPException(status_code=422, detail="unit_id must be an integer")
+        repos = request.app.state.repos
+        if not repos["units"].get(unit_id):
+            raise HTTPException(status_code=404, detail="Unit not found")
+        db = repos["users"].db
+        row = db.execute("SELECT device_id FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Workstation not found")
+        db.execute("UPDATE devices SET unit_id = ?, scope_version = scope_version + 1, revoked_at = NULL WHERE device_id = ?", (unit_id, device_id))
+        SessionRegistry(db).revoke_device(device_id)
+        repos["audit"].record(__import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
+            action="updated", entity_type="device", entity_id=device_id,
+            details=f"Workstation scope changed to unit {unit_id}; re-pairing required",
+            actor=user["username"], device_id="server"))
+        result = db.execute("SELECT device_id, label, unit_id, owner_user_id, registered_at, last_seen_at, revoked_at, scope_version FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        return dict(result)
+
+    @app.post("/api/org/devices/{device_id}/revoke", tags=["org"])
+    def revoke_workstation(device_id: str, user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        db = request.app.state.repos["users"].db
+        row = db.execute("SELECT device_id FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Workstation not found")
+        from app.utils.dates import to_iso, utcnow
+        revoked_at = to_iso(utcnow())
+        db.execute("UPDATE devices SET revoked_at = ? WHERE device_id = ?", (revoked_at, device_id))
+        count = SessionRegistry(db).revoke_device(device_id)
+        request.app.state.repos["audit"].record(__import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
+            action="revoked", entity_type="device", entity_id=device_id,
+            details=f"Workstation revoked; {count} session(s) invalidated",
+            actor=user["username"], device_id="server"))
+        return {"device_id": device_id, "revoked": True, "revoked_sessions": count}
+
     @app.get("/api/departments", tags=["org"])
     def list_departments(user=Depends(current_user), request: Request = None):
         """Departments for dropdowns and lists — needs only patient visibility.
@@ -1089,6 +1263,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
         svc = OrgService(repos, SecurityService(repos["users"]))
         if body.password:
             svc.change_password(user_id, body.password)
+            SessionRegistry(repos["users"].db).revoke_user(user_id)
+        if body.active is False:
+            SessionRegistry(repos["users"].db).revoke_user(user_id)
         if body.role:
             svc.change_role(user_id, body.role)
         if body.active is not None:
@@ -1402,26 +1579,179 @@ def create_app(config: Config | None = None, db=None, repos=None,
 
     # --------------------------------------------------------------- sync
 
+    def _require_bound_sync_device(user: dict, supplied_device_id: str | None) -> str:
+        bound = user.get("device_id")
+        if user.get("client_type") != "desktop" or not bound:
+            raise HTTPException(status_code=403, detail="A paired desktop session is required for synchronization")
+        if supplied_device_id and supplied_device_id != bound:
+            raise HTTPException(status_code=403, detail="device_id does not match the authenticated workstation")
+        return bound
+
     @app.post("/api/sync/push", tags=["sync"])
     def sync_push(body: SyncPush, user=Depends(current_user),
                   request: Request = None):
         require(user, "sync.manage")
+        device_id = _require_bound_sync_device(user, body.device_id)
+        batch_id = (body.batch_id or body.change_id or "").strip()
+        if not batch_id or len(batch_id) > 128:
+            raise HTTPException(status_code=422, detail="A batch_id (or change_id) of 1-128 characters is required")
         repos = request.app.state.repos
+        db = repos["patients"].db
+        device = db.execute(
+            "SELECT unit_id, scope_version FROM devices WHERE device_id = ? AND revoked_at IS NULL",
+            (device_id,),
+        ).fetchone()
+        if not device or device["unit_id"] is None:
+            raise HTTPException(status_code=403, detail="Workstation must be assigned to a department before syncing")
+        allowed_units = db.execute(
+            "WITH RECURSIVE allowed(unit_id) AS (SELECT unit_id FROM units WHERE unit_id = ? UNION ALL SELECT u.unit_id FROM units u JOIN allowed a ON u.parent_id = a.unit_id) SELECT unit_id FROM allowed",
+            (device["unit_id"],),
+        ).fetchall()
+        allowed_unit_ids = {int(row["unit_id"]) for row in allowed_units}
+        for patient_row in body.patients:
+            origin = patient_row.get("origin_unit_id")
+            if origin is None:
+                patient_row["origin_unit_id"] = int(device["unit_id"])
+            elif int(origin) not in allowed_unit_ids:
+                raise HTTPException(status_code=403, detail="Batch contains a patient outside the workstation's assigned unit scope")
+        import json
+        import hashlib
         from app.services.sync import SyncEngine
-        engine = SyncEngine(repos, device_id=body.device_id)
-        report = engine.apply_pull_payload({"patients": body.patients})
-        return {"accepted": len(body.patients), "report": {
-            "pushed": report.pushed, "pulled": report.pulled,
-            "conflicts": [c.describe() for c in report.conflicts],
-        }}
+        payload_hash = hashlib.sha256(json.dumps(
+            body.patients, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")).hexdigest()
+        # Batch receipt and all patient/conflict effects commit together.
+        with db.transaction(immediate=True):
+            prior = db.execute(
+                "SELECT user_id, response_json, payload_hash FROM sync_batches WHERE device_id = ? AND batch_id = ?",
+                (device_id, batch_id),
+            ).fetchone()
+            if prior:
+                if int(prior["user_id"]) != int(user["sub"]):
+                    raise HTTPException(status_code=409, detail="Batch identifier already belongs to another user")
+                if prior["payload_hash"] and prior["payload_hash"] != payload_hash:
+                    raise HTTPException(status_code=409, detail="Batch identifier was reused with a different payload")
+                return json.loads(prior["response_json"])
+            engine = SyncEngine(repos, device_id=device_id)
+            report = engine.apply_pull_payload({"patients": body.patients})
+            conflicted = sorted({c.patient_number for c in report.conflicts})
+            submitted = [str(row.get("patient_number", "")) for row in body.patients]
+            accepted_ids = sorted(set(submitted) - set(conflicted))
+            cursor_row = repos["patients"]._query_one(
+                "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
+            )
+            response = {
+                "accepted": len(accepted_ids),
+                "accepted_patient_numbers": accepted_ids,
+                "conflicted_patient_numbers": conflicted,
+                "batch_id": batch_id,
+                "server_cursor": int(cursor_row["seq"]),
+                "report": {
+                    "pushed": report.pushed, "pulled": report.pulled,
+                    "conflicts": [c.describe() for c in report.conflicts],
+                },
+            }
+            db.execute(
+                "INSERT INTO sync_batches(device_id, batch_id, user_id, response_json, payload_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (device_id, batch_id, int(user["sub"]), json.dumps(response, sort_keys=True),
+                 payload_hash,
+                 __import__("app.utils.dates", fromlist=["to_iso", "utcnow"]).to_iso(
+                     __import__("app.utils.dates", fromlist=["utcnow"]).utcnow())),
+            )
+            return response
+
+    @app.get("/api/sync/conflicts", tags=["sync"])
+    def list_sync_conflicts(limit: int = 100, user=Depends(current_user),
+                            request: Request = None):
+        require(user, "sync.manage")
+        require(user, "patients.view")
+        return request.app.state.repos["sync_conflicts"].list_pending(limit)
+
+    @app.get("/api/sync/conflicts/{conflict_id}", tags=["sync"])
+    def get_sync_conflict(conflict_id: int, user=Depends(current_user),
+                          request: Request = None):
+        require(user, "sync.manage")
+        require(user, "patients.view")
+        conflict = request.app.state.repos["sync_conflicts"].get_conflict(conflict_id)
+        if not conflict:
+            raise HTTPException(status_code=404, detail="Conflict not found")
+        return conflict
+
+    @app.post("/api/sync/conflicts/{conflict_id}/resolve", tags=["sync"])
+    def resolve_sync_conflict(conflict_id: int, body: dict,
+                              user=Depends(current_user),
+                              request: Request = None):
+        require(user, "sync.manage")
+        require(user, "patients.view")
+        choice = body.get("choice")
+        if choice not in {"keep_local", "apply_remote", "field_merge", "reject"}:
+            raise HTTPException(status_code=422, detail="Unsupported resolution choice")
+        try:
+            status = request.app.state.repos["sync_conflicts"].resolve_patient_conflict_atomic(
+                conflict_id, actor=user["username"], choice=choice,
+                patients=request.app.state.repos["patients"],
+                audit=request.app.state.repos["audit"],
+                merged_fields=body.get("merged_fields"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        if status == "not_found":
+            raise HTTPException(status_code=404, detail="Conflict not found")
+        if status == "already_resolved":
+            raise HTTPException(status_code=409, detail="Conflict is already resolved")
+        return {"ok": True, "conflict_id": conflict_id, "status": status,
+                "resolution": choice}
 
     @app.get("/api/sync/pull", tags=["sync"])
-    def sync_pull(request: Request = None, user=Depends(current_user)):
+    def sync_pull(request: Request = None, user=Depends(current_user),
+                  since: int = 0, removal_since: int = 0, limit: int = 100,
+                  scope_version: int | None = None,
+                  device_id: str | None = None):
         require(user, "sync.manage")
+        bound_device = _require_bound_sync_device(user, device_id)
+        if since < 0 or removal_since < 0:
+            raise HTTPException(status_code=422, detail="since and removal_since must be non-negative")
+        if limit < 1 or limit > 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         repos = request.app.state.repos
-        since = None
-        return {"patients": [p.to_row() for p in
-                             repos["patients"].changes_since(since)]}
+        db = repos["patients"].db
+        device = db.execute(
+            "SELECT unit_id, scope_version FROM devices WHERE device_id = ? AND revoked_at IS NULL",
+            (bound_device,),
+        ).fetchone()
+        if not device or device["unit_id"] is None:
+            raise HTTPException(status_code=403, detail="Workstation must be assigned to a department before syncing")
+
+        current_scope_version = int(device["scope_version"])
+        if scope_version is not None and scope_version < current_scope_version:
+            return {
+                "reset_required": True,
+                "scope_version": current_scope_version,
+                "scope_unit_id": int(device["unit_id"]),
+                "patients": [],
+                "removals": [],
+                "cursor": 0,
+                "removal_cursor": 0,
+                "has_more": False,
+                "has_more_removals": False,
+            }
+
+        page = repos["patients"].sync_changes_page(
+            since=since, limit=limit, device_id=bound_device,
+            unit_id=int(device["unit_id"]),
+        )
+        removals_page = repos["patients"].sync_removals_page(
+            since=removal_since, limit=limit, device_id=bound_device,
+        )
+        return {
+            "reset_required": False,
+            **page,
+            **removals_page,
+            "scope_unit_id": int(device["unit_id"]),
+            "scope_version": current_scope_version,
+        }
 
     # ----------------------------------------------------------- exchange
 
@@ -1440,10 +1770,16 @@ def create_app(config: Config | None = None, db=None, repos=None,
     # ------------------------------------------------------------- system
 
     @app.get("/api/health", tags=["system"])
-    def health(request: Request = None):
+    def health():
+        """Minimal public liveness check; disclose no facility or patient data."""
+        return {"ok": True}
+
+    @app.get("/api/system/metrics", tags=["system"])
+    def system_metrics(user=Depends(current_user), request: Request = None):
+        """Operational counts for authorized staff only."""
+        require(user, "reports.view")
         repos = request.app.state.repos
         return {
-            "ok": True,
             "facility": request.app.state.config.facility_name
             if request.app.state.config else "MedFlow",
             "patients": repos["patients"].count(),
