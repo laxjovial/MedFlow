@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -43,7 +43,9 @@ TABLES: tuple[str, ...] = (
         label TEXT,
         unit_id INTEGER REFERENCES units(unit_id),
         last_seen_at TEXT,
-        registered_at TEXT
+        registered_at TEXT,
+        owner_user_id INTEGER REFERENCES users(user_id),
+        revoked_at TEXT
     )
     """,
     """
@@ -173,6 +175,7 @@ TABLES: tuple[str, ...] = (
                 'updated_at', NEW.updated_at, 'created_by', NEW.created_by,
                 'updated_by', NEW.updated_by, 'device_id', NEW.device_id,
                 'origin_unit_id', NEW.origin_unit_id, 'deleted', NEW.deleted,
+                'department_ids', (SELECT json_group_array(unit_id) FROM patient_departments WHERE patient_id = NEW.patient_id),
                 'change_id', NEW.change_id
             ));
     END
