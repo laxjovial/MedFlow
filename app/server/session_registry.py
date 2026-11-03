@@ -61,6 +61,17 @@ class SessionRegistry:
         )
         return cursor.rowcount
 
+    def revoke_device(self, device_id: str, now: int | None = None) -> int:
+        """Revoke every active desktop session bound to one workstation."""
+        now = int(time.time()) if now is None else int(now)
+        cursor = self.database.execute(
+            "UPDATE auth_sessions SET revoked_at = ? "
+            "WHERE device_id = ? AND client_type = 'desktop' "
+            "AND revoked_at IS NULL AND expires_at >= ?",
+            (now, device_id, now),
+        )
+        return cursor.rowcount
+
     def prune_expired(self, now: int | None = None) -> int:
         now = int(time.time()) if now is None else int(now)
         cursor = self.database.execute(
