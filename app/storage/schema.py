@@ -176,7 +176,7 @@ TABLES: tuple[str, ...] = (
                 'updated_at', NEW.updated_at, 'created_by', NEW.created_by,
                 'updated_by', NEW.updated_by, 'device_id', NEW.device_id,
                 'origin_unit_id', NEW.origin_unit_id, 'deleted', NEW.deleted,
-                'department_ids', (SELECT json_group_array(unit_id) FROM patient_departments WHERE patient_id = NEW.patient_id),
+                'department_ids', json(COALESCE((SELECT json_group_array(unit_id) FROM patient_departments WHERE patient_id = NEW.patient_id), '[]')),
                 'change_id', NEW.change_id
             ));
     END
