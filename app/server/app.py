@@ -1161,7 +1161,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
         row = db.execute("SELECT device_id FROM devices WHERE device_id = ?", (device_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Workstation not found")
-        db.execute("UPDATE devices SET unit_id = ?, scope_version = scope_version + 1 WHERE device_id = ?", (unit_id, device_id))
+        db.execute("UPDATE devices SET unit_id = ?, scope_version = scope_version + 1, revoked_at = NULL WHERE device_id = ?", (unit_id, device_id))
         SessionRegistry(db).revoke_device(device_id)
         repos["audit"].record(__import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
             action="updated", entity_type="device", entity_id=device_id,
