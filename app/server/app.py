@@ -545,9 +545,16 @@ def create_app(config: Config | None = None, db=None, repos=None,
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
         db = request.app.state.repos["users"].db
+        existing_device = db.execute(
+            "SELECT owner_user_id, revoked_at FROM devices WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        if existing_device and existing_device["revoked_at"] is not None:
+            raise HTTPException(status_code=403, detail="This workstation was revoked; an administrator must reassign or reactivate it before pairing")
+        if (existing_device and existing_device["owner_user_id"] is not None
+                and int(existing_device["owner_user_id"]) != int(user.user_id)):
+            raise HTTPException(status_code=403, detail="This workstation is assigned to another account")
         from app.utils.dates import to_iso, utcnow
-        # Re-pairing is an explicit administrative recovery path: revoke all
-        # old sessions, then bind the workstation to this account and unit.
         registry = SessionRegistry(db)
         registry.revoke_device(device_id)
         db.execute(
@@ -557,8 +564,7 @@ def create_app(config: Config | None = None, db=None, repos=None,
             VALUES (?, ?, ?, ?, ?, NULL)
             ON CONFLICT(device_id) DO UPDATE SET
                 owner_user_id = excluded.owner_user_id,
-                unit_id = excluded.unit_id,
-                revoked_at = NULL,
+                unit_id = COALESCE(devices.unit_id, excluded.unit_id),
                 label = excluded.label
             """,
             (device_id, "Paired desktop workstation", to_iso(utcnow()),
