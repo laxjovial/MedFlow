@@ -33,6 +33,7 @@ from app.server.pairing import PairingError, pairing
 from app.server.rate_limit import SlidingWindowRateLimiter
 from app.server import sessions as sessions_policy
 from app.server.tokens import issue
+from app.server.cookie_sessions import is_web_session_request, set_browser_session, clear_browser_session
 from app.services.offsite import (
     OffsiteBackupService,
     OffsiteError,
@@ -326,6 +327,28 @@ def create_app(config: Config | None = None, db=None, repos=None,
                 headers={"Retry-After": str(retry_after)},
             )
 
+    def _require_same_origin(request: Request) -> None:
+        """Require a same-origin Origin on browser authentication submissions."""
+        from urllib.parse import urlsplit
+        origin = request.headers.get("Origin")
+        if not origin:
+            raise HTTPException(status_code=403, detail="Missing Origin header")
+        parsed = urlsplit(origin)
+        if parsed.scheme != request.url.scheme or parsed.netloc != request.url.netloc:
+            raise HTTPException(status_code=403, detail="Cross-origin request rejected")
+
+    def _auth_response(request: Request, token: str, ttl: int, user_data: dict,
+                       remember: bool = False):
+        if is_web_session_request(request):
+            _require_same_origin(request)
+            response = JSONResponse({
+                "session": {"remember": remember, "expires_in": ttl},
+                "user": user_data,
+            })
+            set_browser_session(response, request, token, ttl)
+            return response
+        return {"token": token, "user": user_data}
+
     # --------------------------------------------------------------- auth
 
     @app.post("/api/auth/login", tags=["auth"])
@@ -349,15 +372,11 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "display_name": user.display_name,
             "remember": body.remember,
         }, secret, ttl=ttl)
-        return {
-            "token": token,
-            "session": {"remember": body.remember, "expires_in": ttl},
-            "user": {
-                "id": user.user_id, "username": user.username,
-                "display_name": user.display_name, "role": user.role,
-                "permissions": sorted(security.permissions(user)),
-            },
-        }
+        return _auth_response(request, token, ttl, {
+            "id": user.user_id, "username": user.username,
+            "display_name": user.display_name, "role": user.role,
+            "permissions": sorted(security.permissions(user)),
+        }, remember=body.remember)
 
     @app.post("/api/auth/signup", status_code=201, tags=["auth"])
     def signup(body: SignupRequest, request: Request = None):
@@ -400,11 +419,11 @@ def create_app(config: Config | None = None, db=None, repos=None,
         token = issue({"sub": user.user_id, "username": user.username,
                        "role": user.role}, secret,
                       ttl=policy.normal_ttl)
-        return {"token": token, "user": {
+        return _auth_response(request, token, policy.normal_ttl, {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
             "permissions": sorted(security.permissions(user)),
-        }}
+        }, remember=False)
 
     @app.get("/api/auth/config", tags=["auth"])
     def auth_config(request: Request = None):
@@ -436,11 +455,11 @@ def create_app(config: Config | None = None, db=None, repos=None,
         ttl = sessions_policy.ttl_for(policy, body.remember)
         token = issue({"sub": user.user_id, "username": user.username,
                        "role": user.role, "remember": body.remember}, secret, ttl=ttl)
-        return {"token": token, "user": {
+        return _auth_response(request, token, ttl, {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
             "permissions": sorted(security.permissions(user)),
-        }}
+        }, remember=body.remember)
 
     # ------------------------------------------------- desktop pairing
 
@@ -552,6 +571,12 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "display_name": user["display_name"], "role": user["role"],
         }
 
+    @app.post("/api/auth/logout", tags=["auth"])
+    def logout(request: Request):
+        response = JSONResponse({"ok": True})
+        clear_browser_session(response, request)
+        return response
+
     @app.post("/api/auth/refresh", tags=["auth"])
     def refresh_session(request: Request = None, user=Depends(current_user)):
         """Roll the session's expiry forward while the user stays active.
@@ -573,6 +598,10 @@ def create_app(config: Config | None = None, db=None, repos=None,
         rolled = sessions_policy.refreshed_payload(payload, policy)
         ttl = sessions_policy.ttl_for(policy, remember)
         token = issue(payload, request.app.state.token_secret, ttl=ttl)
+        if is_web_session_request(request) and request.cookies.get("medflow_session"):
+            response = JSONResponse({"refreshed": bool(rolled), "expires_in": ttl})
+            set_browser_session(response, request, token, ttl)
+            return response
         return {"token": token, "refreshed": bool(rolled), "expires_in": ttl}
 
     @app.get("/api/settings/session", tags=["settings"])
