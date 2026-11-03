@@ -45,8 +45,16 @@ async function api(path, options = {}) {
 /* ------------------------------------------------------------------ auth */
 
 async function logout() {
-  try { await api("/auth/logout", { method: "POST" }); } catch { /* clear local UI regardless */ }
+  const headers = { "X-MedFlow-Web-Session": "1" };
+  const item = document.cookie.split("; ").find(v => v.startsWith("medflow_csrf="));
+  if (item) headers["X-CSRF-Token"] = decodeURIComponent(item.slice("medflow_csrf=".length));
+  try {
+    await fetch("/api/auth/logout", {
+      method: "POST", headers, credentials: "same-origin",
+    });
+  } catch { /* clear local UI regardless */ }
   state.user = null;
+  clearInterval(refreshTimer);
   localStorage.removeItem("medflow.session");
   localStorage.removeItem("medflow.remember");
   $("#app-view").classList.add("hidden");
