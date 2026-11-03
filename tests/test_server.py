@@ -280,3 +280,93 @@ def test_sync_push_reports_conflicts_separately_from_accepted(client, auth, repo
     assert body["conflicted_patient_numbers"] == [patient.patient_number]
     assert body["batch_id"] == "batch-conflict-1"
     assert isinstance(body["server_cursor"], int)
+
+
+
+def test_sync_rejects_device_id_spoofing(client, auth, repos):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    response = client.get(
+        "/api/sync/pull?device_id=workstation-B", headers=auth
+    )
+    assert response.status_code == 403
+    response = client.post("/api/sync/push", headers=auth, json={
+        "device_id": "workstation-B",
+        "batch_id": "spoofed-batch",
+        "patients": [],
+    })
+    assert response.status_code == 403
+
+
+def test_sync_push_batch_is_idempotent(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    from app.models import Patient
+    remote = Patient.from_row(patient.to_row())
+    remote.patient_id = None
+    remote.patient_number = "MF-998877"
+    remote.name = "First delivery"
+    remote.device_id = "workstation-A"
+    payload = {
+        "device_id": "workstation-A",
+        "batch_id": "stable-batch-001",
+        "patients": [remote.to_row()],
+    }
+    first = client.post("/api/sync/push", headers=auth, json=payload)
+    assert first.status_code == 200, first.text
+    changed_retry = dict(payload)
+    changed_retry["patients"] = []
+    second = client.post("/api/sync/push", headers=auth, json=changed_retry)
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    stored = repos["patients"].get_by_number("MF-998877")
+    assert stored is not None
+    assert stored.name == "First delivery"
+    receipt_count = repos["patients"]._query_one(
+        "SELECT COUNT(*) AS n FROM sync_batches WHERE device_id = ? AND batch_id = ?",
+        ("workstation-A", "stable-batch-001"),
+    )["n"]
+    assert receipt_count == 1
+
+
+def test_sync_pull_returns_immutable_revision_snapshots(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    start = repos["patients"]._query_one(
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
+    )["seq"]
+    local = repos["patients"].get(patient.patient_id)
+    local.name = "Revision one"
+    repos["patients"].update(local, ["name"])
+    local = repos["patients"].get(patient.patient_id)
+    local.name = "Revision two"
+    repos["patients"].update(local, ["name"])
+    first = client.get(
+        f"/api/sync/pull?since={start}&limit=1&device_id=workstation-A",
+        headers=auth,
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["has_more"] is True
+    assert body["patients"][0]["name"] == "Revision one"
+    second = client.get(
+        f"/api/sync/pull?since={body['cursor']}&limit=10&device_id=workstation-A",
+        headers=auth,
+    )
+    assert second.status_code == 200
+    assert second.json()["patients"][0]["name"] == "Revision two"
+
+
+def test_sync_pull_propagates_patient_tombstone(client, auth, repos, patient):
+    _bind_sync_test_session(client, auth, repos, "workstation-A")
+    start = repos["patients"]._query_one(
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
+    )["seq"]
+    assert repos["patients"].soft_delete(patient.patient_id, actor="tester",
+                                         device_id="server")
+    response = client.get(
+        f"/api/sync/pull?since={start}&device_id=workstation-A",
+        headers=auth,
+    )
+    assert response.status_code == 200
+    rows = response.json()["patients"]
+    tombstone = next(row for row in rows
+                     if row["patient_number"] == patient.patient_number)
+    assert tombstone["deleted"] == 1
