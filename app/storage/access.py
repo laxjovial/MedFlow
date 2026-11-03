@@ -185,6 +185,10 @@ class PatientDepartmentRepository:
             self.assign(patient_id, uid, by)
         for uid in current - wanted:
             self.unassign(patient_id, uid)
+        if current - wanted:
+            p = self.db.execute("SELECT patient_number FROM patients WHERE patient_id = ?", (patient_id,)).fetchone()
+            if p:
+                emit_patient_descope_events(self.db, patient_id, p["patient_number"])
 
     def count_for_unit(self, unit_id: int) -> int:
         return int(self._exec(
@@ -201,3 +205,60 @@ def extend_repositories(repos: dict[str, Any]) -> dict[str, Any]:
     repos.setdefault("invites", InviteRepository(db))
     repos.setdefault("patient_departments", PatientDepartmentRepository(db))
     return repos
+
+
+def emit_patient_descope_events(db, patient_id: int, patient_number: str) -> None:
+    """Emit device-specific removal events for active workstations that lost access."""
+    p = db.execute("SELECT origin_unit_id FROM patients WHERE patient_id = ?", (patient_id,)).fetchone()
+    if not p:
+        return
+    origin_unit_id = p["origin_unit_id"]
+    dept_rows = db.execute("SELECT unit_id FROM patient_departments WHERE patient_id = ?", (patient_id,)).fetchall()
+    patient_units = {r["unit_id"] for r in dept_rows}
+    if origin_unit_id is not None:
+        patient_units.add(origin_unit_id)
+
+    # Active, assigned workstations
+    devices = db.execute(
+        "SELECT device_id, unit_id FROM devices WHERE unit_id IS NOT NULL AND revoked_at IS NULL"
+    ).fetchall()
+    now = to_iso(utcnow())
+
+    for dev in devices:
+        dev_id = dev["device_id"]
+        dev_unit = dev["unit_id"]
+        # Workstation is authorized if dev_unit or any of its descendants matches patient_units
+        allowed = db.execute(
+            """
+            WITH RECURSIVE allowed(unit_id) AS (
+                SELECT unit_id FROM units WHERE unit_id = ?
+                UNION ALL
+                SELECT u.unit_id FROM units u JOIN allowed a ON u.parent_id = a.unit_id
+            ) SELECT 1 FROM allowed WHERE unit_id IN (%s) LIMIT 1
+            """ % (",".join("?" for _ in patient_units) if patient_units else "NULL"),
+            (dev_unit, *patient_units) if patient_units else (dev_unit,),
+        ).fetchone()
+
+        if not allowed:
+            # Check if this device previously had access / received a change for this patient
+            had_access = db.execute(
+                """
+                SELECT 1 FROM sync_change_log
+                WHERE patient_id = ? AND seq <= (
+                    SELECT COALESCE(MAX(seq), 0) FROM sync_change_log
+                ) LIMIT 1
+                """,
+                (patient_id,),
+            ).fetchone()
+            if had_access:
+                # Insert de-scope event if not already recorded pending after latest change
+                already_queued = db.execute(
+                    "SELECT 1 FROM sync_scope_events WHERE device_id = ? AND patient_number = ? AND action = 'de_scoped'",
+                    (dev_id, patient_number),
+                ).fetchone()
+                if not already_queued:
+                    db.execute(
+                        "INSERT INTO sync_scope_events (device_id, patient_id, patient_number, action, created_at) "
+                        "VALUES (?, ?, ?, 'de_scoped', ?)",
+                        (dev_id, patient_id, patient_number, now),
+                    )

@@ -102,25 +102,29 @@ def test_exchange_bundle_endpoint(client, auth, patient):
     assert bundle["patient"]["name"] == patient.name
 
 
-def _bind_sync_test_session(client, auth, repos, device_id="workstation-A"):
+def _bind_sync_test_session(client, auth, repos, device_id="workstation-A", unit_id=None):
     from app.server.tokens import verify
     from app.models import Unit
     from app.utils.dates import to_iso, utcnow
     token = auth["Authorization"].split(" ", 1)[1]
     claims = verify(token, client.app.state.token_secret)
     db = repos["patients"].db
-    unit = repos["units"].insert(Unit(name="Sync Test Unit", kind="department"))
+    if unit_id is None:
+        unit = repos["units"].insert(Unit(name="Sync Test Unit", kind="department"))
+        unit_id = unit.unit_id
     db.execute("UPDATE users SET unit_id = ? WHERE user_id = ?",
-               (unit.unit_id, claims["sub"]))
+               (unit_id, claims["sub"]))
     db.execute("UPDATE patients SET origin_unit_id = ?",
-               (unit.unit_id,))
+               (unit_id,))
     db.execute(
-        "INSERT INTO devices(device_id, label, unit_id, owner_user_id, registered_at, scope_version) "
-        "VALUES (?, ?, ?, ?, ?, 1)",
-        (device_id, "Test workstation", unit.unit_id, claims["sub"], to_iso(utcnow())),
+        "INSERT INTO devices(device_id, label, unit_id, owner_user_id, registered_at, scope_version, revoked_at) "
+        "VALUES (?, ?, ?, ?, ?, 1, NULL) "
+        "ON CONFLICT(device_id) DO UPDATE SET "
+        "unit_id = excluded.unit_id, revoked_at = NULL",
+        (device_id, "Test workstation", unit_id, claims["sub"], to_iso(utcnow())),
     )
     db.execute(
-        "UPDATE auth_sessions SET client_type = 'desktop', device_id = ? WHERE jti = ?",
+        "UPDATE auth_sessions SET client_type = 'desktop', device_id = ?, revoked_at = NULL WHERE jti = ?",
         (device_id, claims["jti"]),
     )
 
@@ -416,3 +420,72 @@ def test_sync_pull_propagates_patient_tombstone(client, auth, repos, patient):
     tombstone = next(row for row in rows
                      if row["patient_number"] == patient.patient_number)
     assert tombstone["deleted"] == 1
+
+
+def test_sync_pull_emits_removal_events_and_supports_scope_reset(client, auth, repos, patient):
+    from app.models import Unit
+    u1 = repos["units"].insert(Unit(name="Dept A", kind="department"))
+    u2 = repos["units"].insert(Unit(name="Dept B", kind="department"))
+
+    # Workstation A assigned to Dept A
+    _bind_sync_test_session(client, auth, repos, "workstation-A", unit_id=u1.unit_id)
+
+    # Initial state: patient belongs to Dept A
+    local = repos["patients"].get(patient.patient_id)
+    local.origin_unit_id = u1.unit_id
+    repos["patients"].update(local, ["origin_unit_id"])
+
+    # Workstation A pulls and receives patient
+    pull1 = client.get("/api/sync/pull?since=0&device_id=workstation-A", headers=auth)
+    assert pull1.status_code == 200
+    p1_data = pull1.json()
+    assert patient.patient_number in {p["patient_number"] for p in p1_data["patients"]}
+    assert p1_data["removals"] == []
+    curr_cursor = p1_data["cursor"]
+    curr_rem_cursor = p1_data["removal_cursor"]
+
+    # Transfer patient to Dept B (origin_unit_id reassigned)
+    local = repos["patients"].get(patient.patient_id)
+    local.origin_unit_id = u2.unit_id
+    repos["patients"].update(local, ["origin_unit_id"])
+
+    # Workstation A pulls with its previous cursors
+    pull2 = client.get(
+        f"/api/sync/pull?since={curr_cursor}&removal_since={curr_rem_cursor}&device_id=workstation-A",
+        headers=auth,
+    )
+    assert pull2.status_code == 200
+    p2_data = pull2.json()
+    # Patient is not in new changes for Dept A
+    assert patient.patient_number not in {p["patient_number"] for p in p2_data["patients"]}
+    # De-scope removal event is delivered!
+    assert len(p2_data["removals"]) == 1
+    assert p2_data["removals"][0]["patient_number"] == patient.patient_number
+    assert p2_data["removals"][0]["action"] == "de_scoped"
+    # Verify no clinical leak in removal payload
+    assert set(p2_data["removals"][0].keys()) == {"patient_number", "action"}
+
+    # Scope Reset Test: admin reassigns workstation-A to Dept B (bumps scope_version)
+    scope_patch = client.patch(
+        "/api/org/devices/workstation-A/scope",
+        headers=auth,
+        json={"unit_id": u2.unit_id},
+    )
+    assert scope_patch.status_code == 200
+    new_scope_version = scope_patch.json()["scope_version"]
+    assert new_scope_version >= 2
+
+    # Re-bind session because scope reassignment revokes existing workstation sessions
+    _bind_sync_test_session(client, auth, repos, "workstation-A", unit_id=u2.unit_id)
+
+    # Workstation calls pull presenting old scope_version=1
+    stale_pull = client.get(
+        "/api/sync/pull?since=0&scope_version=1&device_id=workstation-A",
+        headers=auth,
+    )
+    assert stale_pull.status_code == 200
+    stale_data = stale_pull.json()
+    assert stale_data["reset_required"] is True
+    assert stale_data["scope_version"] == new_scope_version
+    assert stale_data["patients"] == []
+    assert stale_data["removals"] == []

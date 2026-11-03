@@ -251,6 +251,41 @@ class PatientRepository(_Repository):
             "high_watermark": high_watermark,
         }
 
+    def sync_removals_page(self, *, since: int = 0, limit: int = 100,
+                           device_id: str) -> dict:
+        """Return pending device-specific de-scope removal events."""
+        since = max(0, int(since))
+        limit = max(1, min(int(limit), 500))
+        high_watermark = int(self._query_one(
+            "SELECT COALESCE(MAX(event_seq), 0) AS seq FROM sync_scope_events WHERE device_id = ?",
+            (device_id,)
+        )["seq"])
+        rows = self._query_all(
+            """
+            SELECT event_seq, patient_number, action
+            FROM sync_scope_events
+            WHERE device_id = ? AND event_seq > ?
+            ORDER BY event_seq
+            LIMIT ?
+            """,
+            (device_id, since, limit + 1),
+        )
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        removal_cursor = int(page[-1]["event_seq"]) if page else high_watermark
+        if not has_more:
+            removal_cursor = max(removal_cursor, high_watermark)
+        removals = [
+            {"patient_number": r["patient_number"], "action": r["action"]}
+            for r in page
+        ]
+        return {
+            "removals": removals,
+            "removal_cursor": removal_cursor,
+            "has_more_removals": has_more,
+            "removal_high_watermark": high_watermark,
+        }
+
     # ------------------------------------------------------------------ #
     # writes
 
@@ -281,6 +316,8 @@ class PatientRepository(_Repository):
     def update(self, patient: Patient, fields: Iterable[str],
                bump_version: bool = True) -> Patient:
         """Persist the named fields of a patient; bumps version + updated_at."""
+        prior = self.get(patient.patient_id) if patient.patient_id else None
+        old_origin = prior.origin_unit_id if prior else None
         row = patient.to_row()
         updates = [f for f in fields if f in row]
         if not updates:
@@ -299,6 +336,9 @@ class PatientRepository(_Repository):
             f"UPDATE {self.table} SET {assignments} WHERE patient_id = ?",
             tuple(params),
         )
+        if "origin_unit_id" in updates and old_origin is not None and old_origin != patient.origin_unit_id:
+            from app.storage.access import emit_patient_descope_events
+            emit_patient_descope_events(self.db, patient.patient_id, patient.patient_number)
         return patient
 
     def soft_delete(self, patient_id: int, actor: str | None = None,

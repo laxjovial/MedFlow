@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -431,6 +431,20 @@ TABLES: tuple[str, ...] = (
         key TEXT PRIMARY KEY,
         value TEXT
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sync_scope_events (
+        event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        patient_id INTEGER,
+        patient_number TEXT NOT NULL,
+        action TEXT NOT NULL DEFAULT 'de_scoped',
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sync_scope_events_device_seq
+    ON sync_scope_events(device_id, event_seq)
     """,
 )
 

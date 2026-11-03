@@ -354,6 +354,23 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
     (9, _migrate_sync_hardening),
     # v9 -> v10: device ownership/revocation and department-aware snapshots.
     (10, _migrate_device_scope),
+    # v10 -> v11: durable scope removal events for de-scoped patients.
+    (11, lambda conn: (
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_scope_events (
+                event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                patient_id INTEGER,
+                patient_number TEXT NOT NULL,
+                action TEXT NOT NULL DEFAULT 'de_scoped',
+                created_at TEXT NOT NULL
+            )
+        """),
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_scope_events_device_seq "
+            "ON sync_scope_events(device_id, event_seq)"
+        ),
+    )),
 ]
 
 

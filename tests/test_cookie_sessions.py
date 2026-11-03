@@ -293,7 +293,7 @@ def test_session_registry_migration_upgrades_schema_v5_to_v6(db):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-        assert version == 10
-        assert {"auth_sessions", "sync_conflicts", "sync_change_log", "sync_batches"} <= tables
+        assert version == 11
+        assert {"auth_sessions", "sync_conflicts", "sync_change_log", "sync_batches", "sync_scope_events"} <= tables
     finally:
         migrated.close()

@@ -1706,12 +1706,13 @@ def create_app(config: Config | None = None, db=None, repos=None,
 
     @app.get("/api/sync/pull", tags=["sync"])
     def sync_pull(request: Request = None, user=Depends(current_user),
-                  since: int = 0, limit: int = 100,
+                  since: int = 0, removal_since: int = 0, limit: int = 100,
+                  scope_version: int | None = None,
                   device_id: str | None = None):
         require(user, "sync.manage")
         bound_device = _require_bound_sync_device(user, device_id)
-        if since < 0:
-            raise HTTPException(status_code=422, detail="since must be non-negative")
+        if since < 0 or removal_since < 0:
+            raise HTTPException(status_code=422, detail="since and removal_since must be non-negative")
         if limit < 1 or limit > 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         repos = request.app.state.repos
@@ -1722,12 +1723,35 @@ def create_app(config: Config | None = None, db=None, repos=None,
         ).fetchone()
         if not device or device["unit_id"] is None:
             raise HTTPException(status_code=403, detail="Workstation must be assigned to a department before syncing")
+
+        current_scope_version = int(device["scope_version"])
+        if scope_version is not None and scope_version < current_scope_version:
+            return {
+                "reset_required": True,
+                "scope_version": current_scope_version,
+                "scope_unit_id": int(device["unit_id"]),
+                "patients": [],
+                "removals": [],
+                "cursor": 0,
+                "removal_cursor": 0,
+                "has_more": False,
+                "has_more_removals": False,
+            }
+
         page = repos["patients"].sync_changes_page(
             since=since, limit=limit, device_id=bound_device,
             unit_id=int(device["unit_id"]),
         )
-        return {**page, "scope_unit_id": int(device["unit_id"]),
-                "scope_version": int(device["scope_version"])}
+        removals_page = repos["patients"].sync_removals_page(
+            since=removal_since, limit=limit, device_id=bound_device,
+        )
+        return {
+            "reset_required": False,
+            **page,
+            **removals_page,
+            "scope_unit_id": int(device["unit_id"]),
+            "scope_version": current_scope_version,
+        }
 
     # ----------------------------------------------------------- exchange
 
