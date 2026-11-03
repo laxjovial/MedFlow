@@ -707,21 +707,80 @@ class SyncConflictRepository(_Repository):
                     row[key] = json.loads(row[key])
         return row
 
-    def resolve(self, conflict_id: int, *, actor: str, choice: str,
-                resolution_snapshot: dict | None = None) -> bool:
+    PATIENT_MERGE_FIELDS = frozenset({
+        "name", "age", "sex", "date_of_birth", "phone", "email", "address",
+        "blood_pressure", "heart_rate", "weight", "medical_history",
+        "diagnosis", "notes",
+    })
+
+    def resolve_patient_conflict_atomic(
+        self, conflict_id: int, *, actor: str, choice: str,
+        patients: "PatientRepository", audit: "AuditRepository",
+        merged_fields: dict | None = None,
+    ) -> str:
+        """Resolve and audit a patient conflict in one SQLite transaction."""
+        from app.models import AuditEvent, Patient
         from app.utils.dates import to_iso, utcnow
+
         if choice not in {"keep_local", "apply_remote", "field_merge", "reject"}:
-            raise ValueError("Unsupported conflict resolution choice")
-        status = "rejected" if choice == "reject" else "resolved"
-        cur = self._exec(
-            "UPDATE sync_conflicts SET status = ?, resolved_by = ?, "
-            "resolved_at = ?, resolution_choice = ?, resolution_snapshot = ? "
-            "WHERE conflict_id = ? AND status = 'pending'",
-            (status, actor, to_iso(utcnow()), choice,
-             json.dumps(resolution_snapshot, sort_keys=True, default=str)
-             if resolution_snapshot is not None else None, int(conflict_id)),
-        )
-        return cur.rowcount == 1
+            raise ValueError("Unsupported resolution choice")
+        if choice == "field_merge":
+            if not isinstance(merged_fields, dict) or not merged_fields:
+                raise ValueError("field_merge requires non-empty merged_fields")
+            unknown = set(merged_fields) - self.PATIENT_MERGE_FIELDS
+            if unknown:
+                raise ValueError("Unsupported patient fields: " + ", ".join(sorted(unknown)))
+        elif merged_fields is not None:
+            raise ValueError("merged_fields is only valid for field_merge")
+
+        with self.db.transaction(immediate=True):
+            conflict = self._query_one(
+                "SELECT * FROM sync_conflicts WHERE conflict_id = ?",
+                (int(conflict_id),),
+            )
+            if conflict is None:
+                return "not_found"
+            if conflict["status"] != "pending":
+                return "already_resolved"
+            local_snapshot = json.loads(conflict["local_snapshot"])
+            remote_snapshot = json.loads(conflict["remote_snapshot"])
+            patient = patients.get_by_number(conflict["entity_id"])
+            resolution_snapshot = None
+            if choice in {"apply_remote", "field_merge"}:
+                if patient is None or int(patient.version) != int(conflict["local_version"]):
+                    raise RuntimeError("Patient changed since conflict detection; sync again")
+                if choice == "apply_remote":
+                    patients.upsert_from_remote(Patient.from_row(remote_snapshot))
+                    resolution_snapshot = remote_snapshot
+                else:
+                    conflicting = set(json.loads(conflict["conflicting_fields"]))
+                    if not set(merged_fields) <= conflicting:
+                        raise ValueError("Merge may only select recorded conflicting fields")
+                    for field, value in merged_fields.items():
+                        if value != local_snapshot.get(field) and value != remote_snapshot.get(field):
+                            raise ValueError(f"Merge value for {field} must match stored local or remote value")
+                    for field, value in merged_fields.items():
+                        setattr(patient, field, value)
+                    patients.update(patient, merged_fields.keys(), bump_version=True)
+                    resolution_snapshot = patient.to_row()
+            status = "rejected" if choice == "reject" else "resolved"
+            cur = self._exec(
+                "UPDATE sync_conflicts SET status = ?, resolved_by = ?, "
+                "resolved_at = ?, resolution_choice = ?, resolution_snapshot = ? "
+                "WHERE conflict_id = ? AND status = 'pending'",
+                (status, actor, to_iso(utcnow()), choice,
+                 json.dumps(resolution_snapshot, sort_keys=True, default=str)
+                 if resolution_snapshot is not None else None, int(conflict_id)),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError("Conflict was resolved concurrently")
+            audit.record(AuditEvent(
+                action="sync_conflict_resolved", entity_type="sync_conflict",
+                entity_id=str(conflict_id),
+                details=f"choice={choice}; patient={conflict['entity_id']}",
+                actor=actor,
+            ))
+            return status
 
 
 class TemplateRepository(_Repository):
