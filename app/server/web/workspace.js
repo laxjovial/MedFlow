@@ -5,7 +5,6 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const state = {
-  token: null,
   user: null,
   patients: [],
   currentPatient: null,
@@ -14,19 +13,27 @@ const state = {
 /* ------------------------------------------------------------------ api */
 
 async function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  const res = await fetch(`/api${path}`, { ...options, headers });
-  if (res.status === 401 && state.token) {
-    logout();
+  const headers = {
+    "Content-Type": "application/json",
+    "X-MedFlow-Web-Session": "1",
+    ...(options.headers || {}),
+  };
+  const method = (options.method || "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const item = document.cookie.split("; ").find(v => v.startsWith("medflow_csrf="));
+    if (item) headers["X-CSRF-Token"] = decodeURIComponent(item.slice("medflow_csrf=".length));
+  }
+  const res = await fetch(`/api${path}`, {
+    ...options, method, headers, credentials: "same-origin",
+  });
+  if (res.status === 401) {
+    await logout();
     throw new Error("Session expired — sign in again.");
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = body.error || body.detail || {};
-    const message = typeof detail === "string"
-      ? detail
-      : (detail.message || JSON.stringify(detail));
+    const message = typeof detail === "string" ? detail : (detail.message || JSON.stringify(detail));
     const err = new Error(message);
     err.fields = detail.fields;
     err.status = res.status;
@@ -37,8 +44,8 @@ async function api(path, options = {}) {
 
 /* ------------------------------------------------------------------ auth */
 
-function logout() {
-  state.token = null;
+async function logout() {
+  try { await api("/auth/logout", { method: "POST" }); } catch { /* clear local UI regardless */ }
   state.user = null;
   localStorage.removeItem("medflow.session");
   localStorage.removeItem("medflow.remember");
@@ -51,31 +58,18 @@ async function login(username, password, remember = false) {
     method: "POST",
     body: JSON.stringify({ username, password, remember }),
   });
-  state.token = data.token;
   state.user = data.user;
-  localStorage.setItem("medflow.session",
-    JSON.stringify({ token: data.token, user: data.user }));
+  localStorage.removeItem("medflow.session");
   enterApp();
 }
 
-/* Rolling sessions: while this tab is open the workspace quietly renews
-   the sign-in every hour, so a long shift never ends mid-visit. */
 let refreshTimer = null;
-
 function startSessionRefresh() {
   clearInterval(refreshTimer);
   refreshTimer = setInterval(async () => {
-    if (!state.token) return;
-    try {
-      const data = await api("/auth/refresh", { method: "POST" });
-      state.token = data.token;
-      const raw = localStorage.getItem("medflow.session");
-      if (raw) {
-        const session = JSON.parse(raw);
-        session.token = data.token;
-        localStorage.setItem("medflow.session", JSON.stringify(session));
-      }
-    } catch { /* next hour will retry; 401s already force logout */ }
+    if (!state.user) return;
+    try { await api("/auth/refresh", { method: "POST" }); }
+    catch { /* expired sessions are handled by api() */ }
   }, 60 * 60 * 1000);
 }
 
@@ -1540,24 +1534,20 @@ function toast(message) {
 /* ------------------------------------------------------------------ boot */
 
 (async function boot() {
-  const saved = localStorage.getItem("medflow.session");
-  if (saved) {
-    try {
-      const session = JSON.parse(saved);
-      state.token = session.token;
-      state.user = session.user;
-      await api("/auth/me");          // fails 401 if the token expired
-      enterApp();
-      return;
-    } catch {
-      localStorage.removeItem("medflow.session");
-      state.token = null;
-    }
-  }
-  /* no session: the sign-in gate in app.html is already visible */
+  localStorage.removeItem("medflow.session");
+  try {
+    const res = await fetch("/api/auth/me", {
+      headers: { "X-MedFlow-Web-Session": "1" },
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error("No browser session");
+    state.user = await res.json();
+    enterApp();
+    return;
+  } catch { state.user = null; }
   const gate = $("#login-gate");
   if (gate) gate.classList.remove("hidden");
-})();
+})();;
 
 /* ================================================================== bell */
 
