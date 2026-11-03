@@ -1537,39 +1537,24 @@ def create_app(config: Config | None = None, db=None, repos=None,
         require(user, "sync.manage")
         require(user, "patients.view")
         choice = body.get("choice")
-        if choice not in {"keep_local", "apply_remote", "reject"}:
+        if choice not in {"keep_local", "apply_remote", "field_merge", "reject"}:
             raise HTTPException(status_code=422, detail="Unsupported resolution choice")
-        conflict_repo = request.app.state.repos["sync_conflicts"]
-        conflict = conflict_repo.get_conflict(conflict_id)
-        if not conflict:
+        try:
+            status = request.app.state.repos["sync_conflicts"].resolve_patient_conflict_atomic(
+                conflict_id, actor=user["username"], choice=choice,
+                patients=request.app.state.repos["patients"],
+                audit=request.app.state.repos["audit"],
+                merged_fields=body.get("merged_fields"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        if status == "not_found":
             raise HTTPException(status_code=404, detail="Conflict not found")
-        if conflict["status"] != "pending":
+        if status == "already_resolved":
             raise HTTPException(status_code=409, detail="Conflict is already resolved")
-        if choice == "apply_remote":
-            local = request.app.state.repos["patients"].get_by_number(conflict["entity_id"])
-            if not local or int(local.version) != int(conflict["local_version"]):
-                raise HTTPException(
-                    status_code=409,
-                    detail="Local patient changed since conflict detection; sync again before resolving",
-                )
-            from app.models import Patient
-            remote = Patient.from_row(conflict["remote_snapshot"])
-            request.app.state.repos["patients"].upsert_from_remote(remote)
-        resolved = conflict_repo.resolve(
-            conflict_id, actor=user["username"], choice=choice,
-            resolution_snapshot=conflict["remote_snapshot"] if choice == "apply_remote" else None,
-        )
-        if not resolved:
-            raise HTTPException(status_code=409, detail="Conflict was resolved concurrently")
-        from app.models import AuditEvent
-        request.app.state.repos["audit"].record(AuditEvent(
-            action="sync_conflict_resolved", entity_type="sync_conflict",
-            entity_id=str(conflict_id),
-            details=f"choice={choice}; patient={conflict['entity_id']}",
-            actor=user["username"],
-        ))
-        return {"ok": True, "conflict_id": conflict_id, "status":
-                "rejected" if choice == "reject" else "resolved",
+        return {"ok": True, "conflict_id": conflict_id, "status": status,
                 "resolution": choice}
 
     @app.get("/api/sync/pull", tags=["sync"])
