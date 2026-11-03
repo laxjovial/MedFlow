@@ -55,8 +55,15 @@ def current_user(request: Request) -> dict:
     # are intentionally rejected after the session-registry migration.
     jti = payload.get("jti")
     registry = SessionRegistry(request.app.state.repos["users"].db)
-    if not jti or not registry.is_active(jti):
+    session = registry.get(jti) if jti else None
+    if not session or session["revoked_at"] is not None or int(session["expires_at"]) < int(__import__("time").time()):
         raise HTTPException(status_code=401, detail="Session is revoked or expired")
+    if int(session["user_id"]) != int(payload.get("sub", 0)):
+        raise HTTPException(status_code=401, detail="Session identity mismatch")
+    bound_device = session.get("device_id")
+    if session.get("client_type") == "desktop":
+        if not bound_device or payload.get("device_id") != bound_device:
+            raise HTTPException(status_code=401, detail="Desktop device binding is invalid")
 
     user_id = int(payload.get("sub", 0))
     user = request.app.state.repos["users"].get(user_id)
@@ -73,6 +80,8 @@ def current_user(request: Request) -> dict:
         "role": user.role,
         "remember": bool(payload.get("remember")),
         "jti": jti,
+        "client_type": session["client_type"],
+        "device_id": bound_device,
         "token_expires_at": int(payload.get("exp", 0)),
         "temporary": user.role == "temporary",
         "scope_patient_ids": user.scoped_patient_ids() if user.role == "temporary" else None,
