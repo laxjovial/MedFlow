@@ -97,13 +97,19 @@ def test_sync_applies_remote_update_when_no_clinical_fields_conflict():
 
 def test_conflict_is_persisted_and_duplicate_pull_is_idempotent(repos, admin_user, patient):
     from app.services.sync import SyncEngine
-    from datetime import timedelta
-
     local = repos["patients"].get(patient.patient_id)
     local.device_id = "device-A"
     local.version = 2
     local.updated_at = datetime(2026, 10, 28, 10, 0, 0)
     repos["patients"].update(local, ["device_id", "version", "updated_at"], bump_version=False)
+    # Repository.update intentionally stamps wall-clock updated_at. Restore the
+    # simulated prior revision timestamp directly so this test is deterministic.
+    repos["patients"].db.connection().execute(
+        "UPDATE patients SET updated_at = ? WHERE patient_id = ?",
+        ("2026-10-28T10:00:00", patient.patient_id),
+    )
+    repos["patients"].db.connection().commit()
+    local = repos["patients"].get(patient.patient_id)
     remote = Patient.from_row(local.to_row())
     remote.name = "Remote changed name"
     remote.version = 3
@@ -132,6 +138,14 @@ def test_conflict_repository_resolution_is_one_way(repos, admin_user, patient):
     local.version = 2
     local.updated_at = datetime(2026, 10, 28, 10, 0, 0)
     repos["patients"].update(local, ["device_id", "version", "updated_at"], bump_version=False)
+    # Repository.update intentionally stamps wall-clock updated_at. Restore the
+    # simulated prior revision timestamp directly so this test is deterministic.
+    repos["patients"].db.connection().execute(
+        "UPDATE patients SET updated_at = ? WHERE patient_id = ?",
+        ("2026-10-28T10:00:00", patient.patient_id),
+    )
+    repos["patients"].db.connection().commit()
+    local = repos["patients"].get(patient.patient_id)
     remote = Patient.from_row(local.to_row())
     remote.notes = "Remote notes"
     remote.version = 3
