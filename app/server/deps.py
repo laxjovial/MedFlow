@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request
 
 from app.errors import AuthorizationError, NotFoundError
 from app.server.tokens import TokenError, verify
+from app.server.session_registry import SessionRegistry
 from app.server.cookie_sessions import SESSION_COOKIE, is_web_session_request, require_cookie_csrf
 from app.services.patients import PatientService
 from app.services.records import RecordsService, TemplateService
@@ -50,6 +51,13 @@ def current_user(request: Request) -> dict:
     else:
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
+    # Tokens without a persisted jti are legacy pre-registry credentials and
+    # are intentionally rejected after the session-registry migration.
+    jti = payload.get("jti")
+    registry = SessionRegistry(request.app.state.repos["users"].db)
+    if not jti or not registry.is_active(jti):
+        raise HTTPException(status_code=401, detail="Session is revoked or expired")
+
     user = request.app.state.repos["users"].get(payload.get("sub", 0))
     if not user or not user.active:
         raise HTTPException(status_code=401, detail="Account is inactive")
@@ -61,6 +69,8 @@ def current_user(request: Request) -> dict:
         "display_name": user.display_name,
         "role": user.role,
         "remember": bool(payload.get("remember")),
+        "jti": jti,
+        "token_expires_at": int(payload.get("exp", 0)),
         "temporary": user.role == "temporary",
         "scope_patient_ids": user.scoped_patient_ids() if user.role == "temporary" else None,
         "expires_at": user.expires_at,
