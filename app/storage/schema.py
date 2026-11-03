@@ -45,7 +45,8 @@ TABLES: tuple[str, ...] = (
         last_seen_at TEXT,
         registered_at TEXT,
         owner_user_id INTEGER REFERENCES users(user_id),
-        revoked_at TEXT
+        revoked_at TEXT,
+        scope_version INTEGER NOT NULL DEFAULT 1
     )
     """,
     """
