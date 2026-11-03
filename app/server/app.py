@@ -376,6 +376,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
             "permissions": sorted(security.permissions(user)),
+            "temporary": user.role == "temporary",
+            "expires_at": user.expires_at,
         }, remember=body.remember)
 
     @app.post("/api/auth/signup", status_code=201, tags=["auth"])
@@ -386,6 +388,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
         after that signs up as a viewer pending staff promotion. Temporarily
         closable via config for private deployments.
         """
+        if is_web_session_request(request):
+            _require_same_origin(request)
         _limit_auth(request, "signup", limit=5)
         cfg = request.app.state.config
         from app.services.onboarding import PENDING_ROLE
@@ -423,6 +427,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
             "permissions": sorted(security.permissions(user)),
+            "temporary": user.role == "temporary",
+            "expires_at": user.expires_at,
         }, remember=False)
 
     @app.get("/api/auth/config", tags=["auth"])
@@ -437,6 +443,8 @@ def create_app(config: Config | None = None, db=None, repos=None,
     @app.post("/api/auth/google", tags=["auth"])
     def google_login(body: GoogleLoginRequest, request: Request = None):
         """Verify a Google ID token and sign in (or provision) the user."""
+        if is_web_session_request(request):
+            _require_same_origin(request)
         _limit_auth(request, "google-login", limit=5)
         if not request.app.state.google_client_id:
             raise HTTPException(status_code=501, detail="Google sign-in not configured")
