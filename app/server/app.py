@@ -569,10 +569,13 @@ def create_app(config: Config | None = None, db=None, repos=None,
         return {
             "id": user["sub"], "username": user["username"],
             "display_name": user["display_name"], "role": user["role"],
+            "permissions": user["permissions"],
+            "temporary": user["temporary"],
+            "expires_at": user["expires_at"],
         }
 
     @app.post("/api/auth/logout", tags=["auth"])
-    def logout(request: Request):
+    def logout(request: Request, user=Depends(current_user)):
         response = JSONResponse({"ok": True})
         clear_browser_session(response, request)
         return response
