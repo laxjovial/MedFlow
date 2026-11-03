@@ -834,6 +834,13 @@ async function loadSettings() {
   }
   initSettingsNav();
   loadBackups();
+  const permissions = new Set(state.user.permissions || []);
+  const conflictCard = $("#set-sync-conflicts");
+  if (conflictCard) {
+    const allowed = permissions.has("sync.manage") && permissions.has("patients.view");
+    conflictCard.classList.toggle("hidden", !allowed);
+    if (allowed) loadSyncConflicts();
+  }
   loadBin();
   loadCloudBackup();
   loadSessionPolicy();
@@ -1633,7 +1640,8 @@ async function loadNotifications() {
 
 const SETTINGS_SECTIONS = [
   ["set-facility", "Facility"], ["set-departments", "Departments"],
-  ["set-template", "Record template"], ["set-backups", "Backups"],
+  ["set-template", "Record template"], ["set-sync-conflicts", "Sync conflicts"],
+  ["set-backups", "Backups"],
   ["set-cloud", "Off-site cloud copy"], ["set-session", "Session & sign-out"],
   ["set-bin", "Recycle bin"], ["set-staff", "Staff & colleagues"],
   ["set-onboarding", "Invites & approvals"], ["set-automation", "Automation rules"],
