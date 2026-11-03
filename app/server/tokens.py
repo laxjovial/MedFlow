@@ -1,7 +1,7 @@
-"""HMAC-signed bearer tokens with expiry — no external dependency.
+"""HMAC-signed tokens with expiry and unique session identifiers — no external dependency.
 
 Tokens are ``base64(payload).base64(signature)`` where the payload carries
-the user id, username, role, and an expiry timestamp. The signing secret is
+the user id, username, role, a unique session identifier (jti), and an expiry timestamp. The signing secret is
 generated once per server installation and stored beside the database, so
 tokens survive server restarts but are useless to another facility's copy.
 """
