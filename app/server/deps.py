@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request
 
 from app.errors import AuthorizationError, NotFoundError
 from app.server.tokens import TokenError, verify
+from app.server.cookie_sessions import SESSION_COOKIE, is_web_session_request, require_cookie_csrf
 from app.services.patients import PatientService
 from app.services.records import RecordsService, TemplateService
 from app.services.reports import ReportsService
@@ -27,13 +28,27 @@ def current_user(request: Request) -> dict:
     cut off mid-session rather than at next login.
     """
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    # Explicit bearer credentials take precedence; invalid bearer never falls
+    # back to ambient cookies.
+    if auth:
+        if not auth.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Invalid authorization scheme")
+        token = auth.removeprefix("Bearer ").strip()
+        try:
+            payload = verify(token, request.app.state.token_secret)
+        except TokenError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+    elif is_web_session_request(request):
+        token = request.cookies.get(SESSION_COOKIE, "")
+        if not token:
+            raise HTTPException(status_code=401, detail="Missing browser session")
+        require_cookie_csrf(request, token)
+        try:
+            payload = verify(token, request.app.state.token_secret)
+        except TokenError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+    else:
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = auth.removeprefix("Bearer ").strip()
-    try:
-        payload = verify(token, request.app.state.token_secret)
-    except TokenError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
 
     user = request.app.state.repos["users"].get(payload.get("sub", 0))
     if not user or not user.active:
