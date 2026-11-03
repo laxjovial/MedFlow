@@ -379,6 +379,22 @@ TABLES: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_pdept_unit ON patient_departments(unit_id)
     """,
     """
+    CREATE TRIGGER IF NOT EXISTS trg_patient_department_sync_insert
+    AFTER INSERT ON patient_departments
+    BEGIN
+        UPDATE patients SET version = version + 1, updated_at = datetime('now')
+        WHERE patient_id = NEW.patient_id;
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_patient_department_sync_delete
+    AFTER DELETE ON patient_departments
+    BEGIN
+        UPDATE patients SET version = version + 1, updated_at = datetime('now')
+        WHERE patient_id = OLD.patient_id;
+    END
+    """,
+    """
     CREATE TABLE IF NOT EXISTS notifications (
         notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
