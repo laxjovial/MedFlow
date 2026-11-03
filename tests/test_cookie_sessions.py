@@ -184,15 +184,37 @@ def test_refresh_revokes_the_previous_cookie_token(client):
     assert accepted.status_code == 200
 
 
-def test_account_deactivation_invalidates_an_existing_cookie_session(client, repos, admin_user):
-    _browser_login(client)
-    account = repos["users"].get(admin_user.user_id)
-    account.active = False
-    repos["users"].update(account, ["active"])
+def test_account_deactivation_permanently_revokes_existing_sessions(
+    client, repos, admin_user, auth
+):
+    from app.services.security import SecurityService
 
-    response = client.get("/api/patients", headers={"X-MedFlow-Web-Session": "1"})
-    assert response.status_code == 401
-    assert "inactive" in response.json()["detail"].lower()
+    viewer = SecurityService(repos["users"]).create_user(
+        "session-viewer", "Session Viewer", "password123", "viewer"
+    )
+    _browser_login(client, viewer.username, "password123")
+    old_token = client.cookies.get("medflow_session")
+    old_csrf = _csrf(client)
+
+    disabled = client.patch(
+        f"/api/org/users/{viewer.user_id}",
+        headers=auth,
+        json={"active": False},
+    )
+    assert disabled.status_code == 200, disabled.text
+    reenabled = client.patch(
+        f"/api/org/users/{viewer.user_id}",
+        headers=auth,
+        json={"active": True},
+    )
+    assert reenabled.status_code == 200, reenabled.text
+
+    # Reactivating the account must not resurrect credentials issued before
+    # deactivation.
+    client.cookies.set("medflow_session", old_token)
+    client.cookies.set("medflow_csrf", old_csrf)
+    replay = client.get("/api/patients", headers={"X-MedFlow-Web-Session": "1"})
+    assert replay.status_code == 401
 
 
 def test_temporary_account_expiry_invalidates_an_existing_cookie_session(
