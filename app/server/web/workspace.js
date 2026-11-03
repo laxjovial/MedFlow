@@ -802,13 +802,14 @@ async function loadReports() {
   }
 }
 
-/* authorized downloads: fetch with the Bearer token, then save the blob */
+/* authorized downloads: use the browser cookie session, then save the blob */
 $$("#export-row [data-export]").forEach(btn =>
   btn.addEventListener("click", async () => {
     const name = btn.dataset.export, fmt = btn.dataset.fmt;
     try {
       const res = await fetch(`/api/export/${name}.${fmt}`, {
-        headers: { Authorization: `Bearer ${state.token}` },
+        headers: { "X-MedFlow-Web-Session": "1" },
+        credentials: "same-origin",
       });
       if (!res.ok) throw new Error("Export failed");
       const blob = await res.blob();
