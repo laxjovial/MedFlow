@@ -111,6 +111,20 @@ def _migrate_sync_hardening(conn: sqlite3.Connection) -> None:
             END
         """)
     conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_patient_department_sync_insert
+        AFTER INSERT ON patient_departments BEGIN
+            UPDATE patients SET version = version + 1, updated_at = datetime('now')
+            WHERE patient_id = NEW.patient_id;
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_patient_department_sync_delete
+        AFTER DELETE ON patient_departments BEGIN
+            UPDATE patients SET version = version + 1, updated_at = datetime('now')
+            WHERE patient_id = OLD.patient_id;
+        END
+    """)
+    conn.execute("""
         UPDATE sync_change_log
         SET snapshot = (
             SELECT json_object(
