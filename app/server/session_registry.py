@@ -13,16 +13,23 @@ class SessionRegistry:
         self.database = database
 
     def register(self, jti: str, user_id: int, expires_at: int,
-                 client_type: str = "api") -> None:
+                 client_type: str = "api", device_id: str | None = None) -> None:
         now = int(time.time())
         self.database.execute(
             """
             INSERT INTO auth_sessions
-                (jti, user_id, client_type, issued_at, expires_at, revoked_at)
-            VALUES (?, ?, ?, ?, ?, NULL)
+                (jti, user_id, client_type, issued_at, expires_at, revoked_at, device_id)
+            VALUES (?, ?, ?, ?, ?, NULL, ?)
             """,
-            (jti, int(user_id), client_type, now, int(expires_at)),
+            (jti, int(user_id), client_type, now, int(expires_at), device_id),
         )
+
+    def get(self, jti: str) -> dict | None:
+        row = self.database.execute(
+            "SELECT jti, user_id, client_type, device_id, expires_at, revoked_at "
+            "FROM auth_sessions WHERE jti = ?", (jti,),
+        ).fetchone()
+        return dict(row) if row else None
 
     def is_active(self, jti: str, now: int | None = None) -> bool:
         if not jti:
