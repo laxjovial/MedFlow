@@ -34,6 +34,7 @@ class TokenError(Exception):
 
 def issue(payload: dict, secret: bytes, ttl: int = _TOKEN_TTL_SECONDS) -> str:
     body = dict(payload)
+    body.setdefault("jti", secrets.token_urlsafe(32))
     body["exp"] = int(time.time()) + ttl
     raw = json.dumps(body, sort_keys=True).encode()
     sig = hmac.new(secret, raw, hashlib.sha256).digest()
