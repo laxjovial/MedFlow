@@ -213,6 +213,12 @@ def test_sync_pull_uses_incremental_cursor_and_echo_suppression(client, auth, re
     local = repos["patients"].get(patient.patient_id)
     local.device_id = "workstation-A"
     repos["patients"].update(local, ["device_id"], bump_version=False)
+    latest_change = repos["patients"]._query_one(
+        "SELECT device_id, snapshot FROM sync_change_log WHERE patient_id = ? ORDER BY seq DESC LIMIT 1",
+        (patient.patient_id,),
+    )
+    assert latest_change["device_id"] == "workstation-A"
+    assert '"device_id":"workstation-A"' in latest_change["snapshot"]
     first = client.get(
         "/api/sync/pull?since=0&limit=100&device_id=workstation-A",
         headers=auth,
