@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -128,6 +128,35 @@ TABLES: tuple[str, ...] = (
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_patients_name ON patients(name)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sync_change_log (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL,
+        version INTEGER NOT NULL,
+        device_id TEXT,
+        changed_at TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sync_change_log_patient
+    ON sync_change_log(patient_id, seq)
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_patients_sync_insert
+    AFTER INSERT ON patients
+    BEGIN
+        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
+        VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_patients_sync_update
+    AFTER UPDATE ON patients
+    BEGIN
+        INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
+        VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
+    END
     """,
     # --- clinical chart ---
     """
