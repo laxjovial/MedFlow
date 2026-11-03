@@ -302,6 +302,28 @@ def test_sync_push_reports_conflicts_separately_from_accepted(client, auth, repo
 
 
 
+def test_sync_pull_is_limited_to_device_unit_scope(client, auth, repos, patient):
+    from app.models import Unit
+    _bind_sync_test_session(client, auth, repos)
+    device_unit = repos["users"].db.execute("SELECT unit_id FROM devices WHERE device_id = ?", ("workstation-A",)).fetchone()["unit_id"]
+    other = repos["units"].insert(Unit(name="Other Department", kind="department"))
+    patient.origin_unit_id = other.unit_id
+    repos["patients"].update(patient, ["origin_unit_id"])
+    response = client.get("/api/sync/pull", headers=auth)
+    assert response.status_code == 200, response.text
+    assert patient.patient_number not in [row["patient_number"] for row in response.json()["patients"]]
+    assert response.json()["scope_unit_id"] == device_unit
+    assert response.json()["scope_version"] == 1
+
+
+def test_revoking_workstation_invalidates_bound_session(client, auth, repos):
+    _bind_sync_test_session(client, auth, repos)
+    response = client.post("/api/org/devices/workstation-A/revoke", headers=auth)
+    assert response.status_code == 200, response.text
+    assert response.json()["revoked"] is True
+    assert client.get("/api/sync/pull", headers=auth).status_code == 401
+
+
 def test_sync_rejects_device_id_spoofing(client, auth, repos):
     _bind_sync_test_session(client, auth, repos, "workstation-A")
     response = client.get(
