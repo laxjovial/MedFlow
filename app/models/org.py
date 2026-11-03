@@ -90,6 +90,7 @@ class Device:
     registered_at: datetime | None = None
     owner_user_id: int | None = None
     revoked_at: datetime | None = None
+    scope_version: int = 1
     row_id: int | None = None
 
 
