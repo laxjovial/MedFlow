@@ -85,7 +85,7 @@ class PairingRedeem(BaseModel):
     """Body for redeeming a pairing code (desktop side)."""
 
     code: str
-    device_id: str = "workstation-01"
+    device_id: str
 
 
 class AutomationRuleIn(BaseModel):
@@ -340,11 +340,12 @@ def create_app(config: Config | None = None, db=None, repos=None,
             raise HTTPException(status_code=403, detail="Cross-origin request rejected")
 
     def _issue_registered_token(request: Request, payload: dict, ttl: int,
-                                client_type: str = "api") -> str:
+                                client_type: str = "api", device_id: str | None = None) -> str:
         token = issue(payload, request.app.state.token_secret, ttl=ttl)
         claims = verify(token, request.app.state.token_secret)
         SessionRegistry(request.app.state.repos["users"].db).register(
-            claims["jti"], int(claims["sub"]), int(claims["exp"]), client_type
+            claims["jti"], int(claims["sub"]), int(claims["exp"]),
+            client_type, device_id=device_id,
         )
         return token
 
@@ -527,6 +528,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
     def pairing_redeem(body: PairingRedeem, request: Request = None):
         """Exchange a one-time pairing code for a session (desktop side)."""
         _limit_auth(request, "pairing-redeem", limit=5)
+        device_id = body.device_id.strip()
+        if not device_id or len(device_id) > 128:
+            raise HTTPException(status_code=422, detail="device_id must be 1-128 characters")
         try:
             identity = pairing.redeem_code(body.code)
         except PairingError as exc:
@@ -540,9 +544,20 @@ def create_app(config: Config | None = None, db=None, repos=None,
         secret = request.app.state.token_secret
         policy = sessions_policy.policy_from(
             request.app.state.config.session if request.app.state.config else None)
+        db = request.app.state.repos["users"].db
+        existing_device = db.execute(
+            "SELECT device_id FROM devices WHERE device_id = ?", (device_id,)
+        ).fetchone()
+        if not existing_device:
+            from app.utils.dates import to_iso, utcnow
+            db.execute(
+                "INSERT INTO devices(device_id, label, registered_at) VALUES (?, ?, ?)",
+                (device_id, "Paired desktop workstation", to_iso(utcnow())),
+            )
         token = _issue_registered_token(request, {
             "sub": user.user_id, "username": user.username, "role": user.role,
-        }, policy.remember_ttl, "desktop")
+            "device_id": device_id,
+        }, policy.remember_ttl, "desktop", device_id=device_id)
         return {"token": token, "identity": identity, "user": {
             "id": user.user_id, "username": user.username,
             "display_name": user.display_name, "role": user.role,
