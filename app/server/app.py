@@ -260,6 +260,7 @@ class UserPatch(BaseModel):
 class SyncPush(BaseModel):
     device_id: str
     change_id: str | None = None
+    batch_id: str | None = None
     sent_at: str | None = None
     patients: list[dict] = []
 
@@ -1504,14 +1505,30 @@ def create_app(config: Config | None = None, db=None, repos=None,
     def sync_push(body: SyncPush, user=Depends(current_user),
                   request: Request = None):
         require(user, "sync.manage")
+        if not body.device_id.strip():
+            raise HTTPException(status_code=422, detail="device_id is required")
         repos = request.app.state.repos
         from app.services.sync import SyncEngine
         engine = SyncEngine(repos, device_id=body.device_id)
         report = engine.apply_pull_payload({"patients": body.patients})
-        return {"accepted": len(body.patients), "report": {
-            "pushed": report.pushed, "pulled": report.pulled,
-            "conflicts": [c.describe() for c in report.conflicts],
-        }}
+        conflicted = sorted({c.patient_number for c in report.conflicts})
+        submitted = [str(row.get("patient_number", "")) for row in body.patients]
+        accepted_ids = sorted(set(submitted) - set(conflicted))
+        cursor_row = repos["patients"]._query_one(
+            "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
+        )
+        return {
+            # Keep the integer field for existing desktop clients.
+            "accepted": len(accepted_ids),
+            "accepted_patient_numbers": accepted_ids,
+            "conflicted_patient_numbers": conflicted,
+            "batch_id": body.batch_id or body.change_id,
+            "server_cursor": int(cursor_row["seq"]),
+            "report": {
+                "pushed": report.pushed, "pulled": report.pulled,
+                "conflicts": [c.describe() for c in report.conflicts],
+            },
+        }
 
     @app.get("/api/sync/conflicts", tags=["sync"])
     def list_sync_conflicts(limit: int = 100, user=Depends(current_user),
@@ -1558,12 +1575,20 @@ def create_app(config: Config | None = None, db=None, repos=None,
                 "resolution": choice}
 
     @app.get("/api/sync/pull", tags=["sync"])
-    def sync_pull(request: Request = None, user=Depends(current_user)):
+    def sync_pull(request: Request = None, user=Depends(current_user),
+                  since: int = 0, limit: int = 100,
+                  device_id: str | None = None):
         require(user, "sync.manage")
+        if since < 0:
+            raise HTTPException(status_code=422, detail="since must be non-negative")
+        if limit < 1 or limit > 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        if device_id is not None and not device_id.strip():
+            raise HTTPException(status_code=422, detail="device_id cannot be blank")
         repos = request.app.state.repos
-        since = None
-        return {"patients": [p.to_row() for p in
-                             repos["patients"].changes_since(since)]}
+        return repos["patients"].sync_changes_page(
+            since=since, limit=limit, device_id=device_id,
+        )
 
     # ----------------------------------------------------------- exchange
 
