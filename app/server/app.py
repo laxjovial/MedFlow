@@ -1535,16 +1535,22 @@ def create_app(config: Config | None = None, db=None, repos=None,
         repos = request.app.state.repos
         db = repos["patients"].db
         import json
+        import hashlib
         from app.services.sync import SyncEngine
+        payload_hash = hashlib.sha256(json.dumps(
+            body.patients, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")).hexdigest()
         # Batch receipt and all patient/conflict effects commit together.
         with db.transaction(immediate=True):
             prior = db.execute(
-                "SELECT user_id, response_json FROM sync_batches WHERE device_id = ? AND batch_id = ?",
+                "SELECT user_id, response_json, payload_hash FROM sync_batches WHERE device_id = ? AND batch_id = ?",
                 (device_id, batch_id),
             ).fetchone()
             if prior:
                 if int(prior["user_id"]) != int(user["sub"]):
                     raise HTTPException(status_code=409, detail="Batch identifier already belongs to another user")
+                if prior["payload_hash"] and prior["payload_hash"] != payload_hash:
+                    raise HTTPException(status_code=409, detail="Batch identifier was reused with a different payload")
                 return json.loads(prior["response_json"])
             engine = SyncEngine(repos, device_id=device_id)
             report = engine.apply_pull_payload({"patients": body.patients})
@@ -1566,8 +1572,9 @@ def create_app(config: Config | None = None, db=None, repos=None,
                 },
             }
             db.execute(
-                "INSERT INTO sync_batches(device_id, batch_id, user_id, response_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO sync_batches(device_id, batch_id, user_id, response_json, payload_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (device_id, batch_id, int(user["sub"]), json.dumps(response, sort_keys=True),
+                 payload_hash,
                  __import__("app.utils.dates", fromlist=["to_iso", "utcnow"]).to_iso(
                      __import__("app.utils.dates", fromlist=["utcnow"]).utcnow())),
             )
