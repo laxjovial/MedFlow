@@ -155,6 +155,42 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
             "CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status_detected "
             "ON sync_conflicts(status, detected_at)"
         ),
+    )),
+    # v7 -> v8: monotonic patient change sequence for incremental sync.
+    (8, lambda conn: (
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_change_log (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id INTEGER NOT NULL,
+                version INTEGER NOT NULL,
+                device_id TEXT,
+                changed_at TEXT
+            )
+        """),
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sync_change_log_patient "
+            "ON sync_change_log(patient_id, seq)"
+        ),
+        conn.execute("""
+            INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
+            SELECT patient_id, version, device_id, updated_at FROM patients
+        """),
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_patients_sync_insert
+            AFTER INSERT ON patients
+            BEGIN
+                INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
+                VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
+            END
+        """),
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_patients_sync_update
+            AFTER UPDATE ON patients
+            BEGIN
+                INSERT INTO sync_change_log(patient_id, version, device_id, changed_at)
+                VALUES (NEW.patient_id, NEW.version, NEW.device_id, NEW.updated_at);
+            END
+        """),
     ))
 ]
 
