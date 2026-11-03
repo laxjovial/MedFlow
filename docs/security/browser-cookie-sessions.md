@@ -42,17 +42,27 @@ the application cannot directly observe the external HTTPS scheme. Do not
 trust arbitrary forwarded-proto headers as a substitute for a trusted proxy
 configuration.
 
-## Logout and revocation limitation
+## Persistent session registry and revocation
 
-Browser logout requires an authenticated cookie session and valid CSRF token,
-then expires both browser cookies. User activation and temporary-account expiry
-are still checked against the live user record on every request.
+Schema v6 adds an `auth_sessions` registry. Tokens carry a random `jti`;
+only that opaque identifier, user ID, client type, issue time, expiry and
+revocation timestamp are stored. Token material is never persisted.
 
-**This phase does not yet provide a persistent server-side per-session
-revocation registry.** A copied signed token remains valid until its expiry,
-even after the browser's cookies are cleared. Full session revocation,
-device/session inventory, and administrative revocation require a persistent
-session identifier/revocation store and are not claimed as complete here.
+Every newly issued password, signup, Google, desktop-pairing and refreshed
+token is registered. Every authenticated request requires a matching,
+unexpired, non-revoked registry entry. Legacy tokens without a registered
+identifier are rejected and require a fresh sign-in/pairing.
+
+Logout revokes the current token identifier before expiring browser cookies.
+Refresh revokes the previous identifier and registers its replacement, so a
+copied pre-refresh token cannot be replayed. Deactivation, temporary-account
+expiry, and password changes revoke all active sessions for that user;
+reactivating the account does not resurrect previously issued credentials.
+Expired registry rows can be pruned without affecting active sessions.
+
+The registry currently provides server-side session validation and revocation.
+A user-facing device/session inventory and administrative per-device controls
+are not part of this phase.
 
 ## XSS and browser limits
 
