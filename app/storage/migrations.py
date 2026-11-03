@@ -75,10 +75,14 @@ def _migrate_sync_hardening(conn: sqlite3.Connection) -> None:
             batch_id TEXT NOT NULL,
             user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
             response_json TEXT NOT NULL,
+            payload_hash TEXT,
             created_at TEXT NOT NULL,
             PRIMARY KEY(device_id, batch_id)
         )
     """)
+    batch_cols = {row[1] for row in conn.execute("PRAGMA table_info(sync_batches)")}
+    if "payload_hash" not in batch_cols:
+        conn.execute("ALTER TABLE sync_batches ADD COLUMN payload_hash TEXT")
     conn.execute("DROP TRIGGER IF EXISTS trg_patients_sync_insert")
     conn.execute("DROP TRIGGER IF EXISTS trg_patients_sync_update")
     snapshot = """json_object(
