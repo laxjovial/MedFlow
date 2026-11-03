@@ -760,6 +760,9 @@ class SyncConflictRepository(_Repository):
                         if value != local_snapshot.get(field) and value != remote_snapshot.get(field):
                             raise ValueError(f"Merge value for {field} must match stored local or remote value")
                     for field, value in merged_fields.items():
+                        if field == "date_of_birth" and value is not None:
+                            from datetime import date
+                            value = date.fromisoformat(value)
                         setattr(patient, field, value)
                     patients.update(patient, merged_fields.keys(), bump_version=True)
                     resolution_snapshot = patient.to_row()
