@@ -185,11 +185,14 @@ class PatientRepository(_Repository):
         return [Patient.from_row(r) for r in rows]
 
     def sync_changes_page(self, since: int = 0, limit: int = 100,
-                          device_id: str | None = None) -> dict:
+                          device_id: str | None = None,
+                          unit_id: int | None = None) -> dict:
         """Return the latest immutable revision per patient at a bounded watermark."""
         import json
         since = max(0, int(since))
         limit = max(1, min(int(limit), 500))
+        if unit_id is None:
+            raise ValueError("A workstation unit scope is required for synchronization")
         high_watermark = int(self._query_one(
             "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
         )["seq"])
@@ -205,10 +208,29 @@ class PatientRepository(_Repository):
             SELECT l.seq, l.device_id, l.snapshot
             FROM latest x
             JOIN sync_change_log l ON l.patient_id = x.patient_id AND l.seq = x.seq
+            WHERE (
+                CAST(json_extract(l.snapshot, '$.origin_unit_id') AS INTEGER) IN (
+                    WITH RECURSIVE allowed(unit_id) AS (
+                        SELECT unit_id FROM units WHERE unit_id = ?
+                        UNION ALL
+                        SELECT u.unit_id FROM units u JOIN allowed a ON u.parent_id = a.unit_id
+                    ) SELECT unit_id FROM allowed
+                )
+                OR EXISTS (
+                    SELECT 1 FROM json_each(l.snapshot, '$.department_ids') d
+                    WHERE CAST(d.value AS INTEGER) IN (
+                        WITH RECURSIVE allowed(unit_id) AS (
+                            SELECT unit_id FROM units WHERE unit_id = ?
+                            UNION ALL
+                            SELECT u.unit_id FROM units u JOIN allowed a ON u.parent_id = a.unit_id
+                        ) SELECT unit_id FROM allowed
+                    )
+                )
+            )
             ORDER BY l.seq
             LIMIT ?
             """,
-            (high_watermark, since, limit + 1),
+            (high_watermark, since, unit_id, unit_id, limit + 1),
         )
         has_more = len(rows) > limit
         page = rows[:limit]
