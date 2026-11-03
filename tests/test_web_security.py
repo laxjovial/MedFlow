@@ -38,3 +38,21 @@ def test_dynamic_attribute_sinks_escape_api_values():
     assert 'data-id="${esc(n.notification_id)}"' in source
     assert 'data-id="${esc(p.id)}"' in source
     assert 'value="${esc(p.patient_id)}"' in source
+
+
+def test_sync_conflict_review_uses_authorized_api_and_safe_dom_construction():
+    source = WORKSPACE.read_text(encoding="utf-8")
+    assert 'api("/sync/conflicts?limit=200")' in source
+    assert 'api("/sync/conflicts/" + encodeURIComponent(id))' in source
+    assert 'permissions.has("sync.manage") && permissions.has("patients.view")' in source
+    assert 'document.createElement(tag)' in source
+    assert 'node.textContent = String(value)' in source
+    assert 'api("/sync/conflicts/" + encodeURIComponent(id) + "/resolve"' in source
+    assert 'payload.merged_fields' in source
+
+def test_sync_conflict_review_markup_is_present_in_settings():
+    from pathlib import Path
+    markup = (Path(__file__).resolve().parents[1] / "app" / "server" / "web" / "app.html").read_text(encoding="utf-8")
+    assert 'id="set-sync-conflicts"' in markup
+    assert 'id="sync-conflicts-list"' in markup
+    assert 'id="sync-conflict-detail"' in markup
