@@ -9,6 +9,8 @@ changed) are reported, never silently overwritten.
 from __future__ import annotations
 
 import uuid
+import hashlib
+import json
 from dataclasses import dataclass, field
 
 from app.models import AuditEvent, Patient
@@ -104,6 +106,35 @@ class SyncEngine:
                     # field-level merge. Preserve the local record and surface the
                     # conflict instead of overwriting potentially newer clinical data.
                     report.conflicts.extend(conflicts)
+                    conflict_repo = self.repos.get("sync_conflicts")
+                    if conflict_repo is not None:
+                        local_row = local.to_row()
+                        remote_row = remote.to_row()
+                        fields = sorted({c.field for c in conflicts})
+                        fingerprint_payload = {
+                            "entity_type": "patient",
+                            "entity_id": local.patient_number,
+                            "local_version": local.version,
+                            "remote_version": remote.version,
+                            "local_snapshot": local_row,
+                            "remote_snapshot": remote_row,
+                            "fields": fields,
+                        }
+                        fingerprint = hashlib.sha256(
+                            json.dumps(fingerprint_payload, sort_keys=True,
+                                       default=str).encode("utf-8")
+                        ).hexdigest()
+                        conflict_repo.record_patient_conflict(
+                            fingerprint=fingerprint,
+                            entity_id=local.patient_number,
+                            local_version=local.version,
+                            remote_version=remote.version,
+                            local_snapshot=local_row,
+                            remote_snapshot=remote_row,
+                            conflicting_fields=fields,
+                            source_device_id=remote.device_id,
+                            detected_at=to_iso(utcnow()),
+                        )
                     continue
                 self.repos["patients"].upsert_from_remote(remote)
                 report.pulled += 1
