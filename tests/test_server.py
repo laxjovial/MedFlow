@@ -318,11 +318,13 @@ def test_sync_push_batch_is_idempotent(client, auth, repos, patient):
     }
     first = client.post("/api/sync/push", headers=auth, json=payload)
     assert first.status_code == 200, first.text
-    changed_retry = dict(payload)
-    changed_retry["patients"] = []
-    second = client.post("/api/sync/push", headers=auth, json=changed_retry)
+    second = client.post("/api/sync/push", headers=auth, json=payload)
     assert second.status_code == 200
     assert second.json() == first.json()
+    changed_retry = dict(payload)
+    changed_retry["patients"] = []
+    rejected = client.post("/api/sync/push", headers=auth, json=changed_retry)
+    assert rejected.status_code == 409
     stored = repos["patients"].get_by_number("MF-998877")
     assert stored is not None
     assert stored.name == "First delivery"
