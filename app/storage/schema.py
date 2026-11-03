@@ -6,7 +6,7 @@ file can move between a desktop install and a hosted server without
 translation.
 """
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 TABLES: tuple[str, ...] = (
     # --- identity / organization ---
@@ -54,6 +54,20 @@ TABLES: tuple[str, ...] = (
         starts_at TEXT,
         ends_at TEXT
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+        jti TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        client_type TEXT NOT NULL DEFAULT 'api',
+        issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_active
+    ON auth_sessions(user_id, revoked_at, expires_at)
     """,
     # --- patients ---
     """
