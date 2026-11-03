@@ -1134,6 +1134,53 @@ def create_app(config: Config | None = None, db=None, repos=None,
         svc = OrgService(repos, SecurityService(repos["users"]))
         return svc.create_unit(body.name, body.kind, body.parent_id).to_row()
 
+    @app.get("/api/org/devices", tags=["org"])
+    def list_workstations(user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        rows = request.app.state.repos["users"].db.execute(
+            "SELECT device_id, label, unit_id, owner_user_id, registered_at, last_seen_at, revoked_at, scope_version FROM devices ORDER BY registered_at DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @app.patch("/api/org/devices/{device_id}/scope", tags=["org"])
+    def assign_workstation_scope(device_id: str, body: dict, user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        unit_id = body.get("unit_id")
+        if not isinstance(unit_id, int):
+            raise HTTPException(status_code=422, detail="unit_id must be an integer")
+        repos = request.app.state.repos
+        if not repos["units"].get(unit_id):
+            raise HTTPException(status_code=404, detail="Unit not found")
+        db = repos["users"].db
+        row = db.execute("SELECT device_id FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Workstation not found")
+        db.execute("UPDATE devices SET unit_id = ?, scope_version = scope_version + 1 WHERE device_id = ?", (unit_id, device_id))
+        SessionRegistry(db).revoke_device(device_id)
+        repos["audit"].record(__import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
+            action="updated", entity_type="device", entity_id=device_id,
+            details=f"Workstation scope changed to unit {unit_id}; re-pairing required",
+            actor=user["username"], device_id="server"))
+        result = db.execute("SELECT device_id, label, unit_id, owner_user_id, registered_at, last_seen_at, revoked_at, scope_version FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        return dict(result)
+
+    @app.post("/api/org/devices/{device_id}/revoke", tags=["org"])
+    def revoke_workstation(device_id: str, user=Depends(current_user), request: Request = None):
+        require(user, "settings.manage")
+        db = request.app.state.repos["users"].db
+        row = db.execute("SELECT device_id FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Workstation not found")
+        from app.utils.dates import to_iso, utcnow
+        revoked_at = to_iso(utcnow())
+        db.execute("UPDATE devices SET revoked_at = ? WHERE device_id = ?", (revoked_at, device_id))
+        count = SessionRegistry(db).revoke_device(device_id)
+        request.app.state.repos["audit"].record(__import__("app.models", fromlist=["AuditEvent"]).AuditEvent(
+            action="revoked", entity_type="device", entity_id=device_id,
+            details=f"Workstation revoked; {count} session(s) invalidated",
+            actor=user["username"], device_id="server"))
+        return {"device_id": device_id, "revoked": True, "revoked_sessions": count}
+
     @app.get("/api/departments", tags=["org"])
     def list_departments(user=Depends(current_user), request: Request = None):
         """Departments for dropdowns and lists — needs only patient visibility.
