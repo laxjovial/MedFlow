@@ -572,7 +572,7 @@ class TestRecordTemplate:
         conn.commit()
         assert get_user_version(conn) == 3
         migrate(conn)
-        assert get_user_version(conn) == 8
+        assert get_user_version(conn) == 9
 
 
 # ---------------- notifications, invites, multi-department (v5) ----------
