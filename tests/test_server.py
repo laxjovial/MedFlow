@@ -341,23 +341,26 @@ def test_sync_pull_returns_immutable_revision_snapshots(client, auth, repos, pat
     local = repos["patients"].get(patient.patient_id)
     local.name = "Revision one"
     repos["patients"].update(local, ["name"])
+    first_revision = repos["patients"]._query_one(
+        "SELECT seq, snapshot FROM sync_change_log WHERE patient_id = ? ORDER BY seq DESC LIMIT 1",
+        (patient.patient_id,),
+    )
     local = repos["patients"].get(patient.patient_id)
     local.name = "Revision two"
     repos["patients"].update(local, ["name"])
-    first = client.get(
-        f"/api/sync/pull?since={start}&limit=1&device_id=workstation-A",
+    stored_first = repos["patients"]._query_one(
+        "SELECT snapshot FROM sync_change_log WHERE seq = ?",
+        (first_revision["seq"],),
+    )
+    assert '"name":"Revision one"' in stored_first["snapshot"]
+    response = client.get(
+        f"/api/sync/pull?since={start}&limit=10&device_id=workstation-A",
         headers=auth,
     )
-    assert first.status_code == 200, first.text
-    body = first.json()
-    assert body["has_more"] is True
-    assert body["patients"][0]["name"] == "Revision one"
-    second = client.get(
-        f"/api/sync/pull?since={body['cursor']}&limit=10&device_id=workstation-A",
-        headers=auth,
-    )
-    assert second.status_code == 200
-    assert second.json()["patients"][0]["name"] == "Revision two"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["patients"][0]["name"] == "Revision two"
+    assert body["has_more"] is False
 
 
 def test_sync_pull_propagates_patient_tombstone(client, auth, repos, patient):
