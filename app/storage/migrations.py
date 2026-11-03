@@ -139,6 +139,7 @@ def _migrate_device_scope(conn: sqlite3.Connection) -> None:
     for name, declaration in (
         ("owner_user_id", "INTEGER REFERENCES users(user_id)"),
         ("revoked_at", "TEXT"),
+        ("scope_version", "INTEGER NOT NULL DEFAULT 1"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE devices ADD COLUMN {name} {declaration}")
