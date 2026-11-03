@@ -91,7 +91,7 @@ class TestPairingEndpoints:
     def test_redeemed_code_cannot_be_reused(self, client, auth):
         code = client.post("/api/pairing/code", json={}, headers=auth).json()["code"]
         client.post("/api/pairing/redeem", json={"code": code, "device_id": "test-workstation"})
-        again = client.post("/api/pairing/redeem", json={"code": code})
+        again = client.post("/api/pairing/redeem", json={"code": code, "device_id": "test-workstation"})
         assert again.status_code == 401
 
 
