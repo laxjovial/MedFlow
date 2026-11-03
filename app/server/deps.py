@@ -20,7 +20,7 @@ from app.utils.dates import to_iso, utcnow
 
 
 def current_user(request: Request) -> dict:
-    """Validate the bearer token, load the live user, derive permissions.
+    """Validate a bearer or explicitly opted-in browser cookie session.
 
     Permissions are resolved from the database on every request (not baked
     into the token), so a role change applies immediately, a deactivated
