@@ -1516,34 +1516,62 @@ def create_app(config: Config | None = None, db=None, repos=None,
 
     # --------------------------------------------------------------- sync
 
+    def _require_bound_sync_device(user: dict, supplied_device_id: str | None) -> str:
+        bound = user.get("device_id")
+        if user.get("client_type") != "desktop" or not bound:
+            raise HTTPException(status_code=403, detail="A paired desktop session is required for synchronization")
+        if supplied_device_id and supplied_device_id != bound:
+            raise HTTPException(status_code=403, detail="device_id does not match the authenticated workstation")
+        return bound
+
     @app.post("/api/sync/push", tags=["sync"])
     def sync_push(body: SyncPush, user=Depends(current_user),
                   request: Request = None):
         require(user, "sync.manage")
-        if not body.device_id.strip():
-            raise HTTPException(status_code=422, detail="device_id is required")
+        device_id = _require_bound_sync_device(user, body.device_id)
+        batch_id = (body.batch_id or body.change_id or "").strip()
+        if not batch_id or len(batch_id) > 128:
+            raise HTTPException(status_code=422, detail="A batch_id (or change_id) of 1-128 characters is required")
         repos = request.app.state.repos
+        db = repos["patients"].db
+        import json
         from app.services.sync import SyncEngine
-        engine = SyncEngine(repos, device_id=body.device_id)
-        report = engine.apply_pull_payload({"patients": body.patients})
-        conflicted = sorted({c.patient_number for c in report.conflicts})
-        submitted = [str(row.get("patient_number", "")) for row in body.patients]
-        accepted_ids = sorted(set(submitted) - set(conflicted))
-        cursor_row = repos["patients"]._query_one(
-            "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
-        )
-        return {
-            # Keep the integer field for existing desktop clients.
-            "accepted": len(accepted_ids),
-            "accepted_patient_numbers": accepted_ids,
-            "conflicted_patient_numbers": conflicted,
-            "batch_id": body.batch_id or body.change_id,
-            "server_cursor": int(cursor_row["seq"]),
-            "report": {
-                "pushed": report.pushed, "pulled": report.pulled,
-                "conflicts": [c.describe() for c in report.conflicts],
-            },
-        }
+        # Batch receipt and all patient/conflict effects commit together.
+        with db.transaction(immediate=True):
+            prior = db.execute(
+                "SELECT user_id, response_json FROM sync_batches WHERE device_id = ? AND batch_id = ?",
+                (device_id, batch_id),
+            ).fetchone()
+            if prior:
+                if int(prior["user_id"]) != int(user["sub"]):
+                    raise HTTPException(status_code=409, detail="Batch identifier already belongs to another user")
+                return json.loads(prior["response_json"])
+            engine = SyncEngine(repos, device_id=device_id)
+            report = engine.apply_pull_payload({"patients": body.patients})
+            conflicted = sorted({c.patient_number for c in report.conflicts})
+            submitted = [str(row.get("patient_number", "")) for row in body.patients]
+            accepted_ids = sorted(set(submitted) - set(conflicted))
+            cursor_row = repos["patients"]._query_one(
+                "SELECT COALESCE(MAX(seq), 0) AS seq FROM sync_change_log"
+            )
+            response = {
+                "accepted": len(accepted_ids),
+                "accepted_patient_numbers": accepted_ids,
+                "conflicted_patient_numbers": conflicted,
+                "batch_id": batch_id,
+                "server_cursor": int(cursor_row["seq"]),
+                "report": {
+                    "pushed": report.pushed, "pulled": report.pulled,
+                    "conflicts": [c.describe() for c in report.conflicts],
+                },
+            }
+            db.execute(
+                "INSERT INTO sync_batches(device_id, batch_id, user_id, response_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (device_id, batch_id, int(user["sub"]), json.dumps(response, sort_keys=True),
+                 __import__("app.utils.dates", fromlist=["to_iso", "utcnow"]).to_iso(
+                     __import__("app.utils.dates", fromlist=["utcnow"]).utcnow())),
+            )
+            return response
 
     @app.get("/api/sync/conflicts", tags=["sync"])
     def list_sync_conflicts(limit: int = 100, user=Depends(current_user),
@@ -1594,15 +1622,14 @@ def create_app(config: Config | None = None, db=None, repos=None,
                   since: int = 0, limit: int = 100,
                   device_id: str | None = None):
         require(user, "sync.manage")
+        bound_device = _require_bound_sync_device(user, device_id)
         if since < 0:
             raise HTTPException(status_code=422, detail="since must be non-negative")
         if limit < 1 or limit > 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
-        if device_id is not None and not device_id.strip():
-            raise HTTPException(status_code=422, detail="device_id cannot be blank")
         repos = request.app.state.repos
         return repos["patients"].sync_changes_page(
-            since=since, limit=limit, device_id=device_id,
+            since=since, limit=limit, device_id=bound_device,
         )
 
     # ----------------------------------------------------------- exchange
