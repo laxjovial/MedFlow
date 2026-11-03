@@ -186,12 +186,8 @@ class PatientRepository(_Repository):
 
     def sync_changes_page(self, since: int = 0, limit: int = 100,
                           device_id: str | None = None) -> dict:
-        """Return a bounded page of latest patient changes after a stable sequence cursor.
-
-        The cursor advances over every scanned change, including changes
-        originating on the requesting device, so echo suppression cannot
-        strand the client on the same page.
-        """
+        """Return immutable patient revision events after a sequence cursor."""
+        import json
         since = max(0, int(since))
         limit = max(1, min(int(limit), 500))
         high_watermark = int(self._query_one(
@@ -199,38 +195,29 @@ class PatientRepository(_Repository):
         )["seq"])
         rows = self._query_all(
             """
-            WITH latest AS (
-                SELECT patient_id, MAX(seq) AS seq
-                FROM sync_change_log
-                WHERE seq <= ?
-                GROUP BY patient_id
-                HAVING MAX(seq) > ?
-            )
-            SELECT l.seq, l.patient_id, l.device_id
-            FROM latest x
-            JOIN sync_change_log l ON l.patient_id = x.patient_id AND l.seq = x.seq
-            ORDER BY l.seq
+            SELECT seq, device_id, snapshot
+            FROM sync_change_log
+            WHERE seq > ? AND seq <= ?
+            ORDER BY seq
             LIMIT ?
             """,
-            (high_watermark, since, limit + 1),
+            (since, high_watermark, limit + 1),
         )
         has_more = len(rows) > limit
         page = rows[:limit]
-        next_cursor = int(page[-1]["seq"]) if page else min(since, high_watermark)
-        # If this is the final page, advance over all scanned events, including
-        # self-originated changes omitted from the response.
-        if not has_more:
-            next_cursor = high_watermark
+        cursor = int(page[-1]["seq"]) if page else high_watermark
         patients = []
         for row in page:
             if device_id and row["device_id"] == device_id:
                 continue
-            patient = self.get(int(row["patient_id"]), include_deleted=True)
-            if patient is not None:
-                patients.append(patient.to_row())
+            if not row["snapshot"]:
+                # A missing snapshot indicates a damaged/incomplete migration;
+                # fail closed instead of silently skipping a clinical revision.
+                raise RuntimeError("Sync revision snapshot is missing")
+            patients.append(json.loads(row["snapshot"]))
         return {
             "patients": patients,
-            "cursor": next_cursor,
+            "cursor": cursor,
             "has_more": has_more,
             "high_watermark": high_watermark,
         }
