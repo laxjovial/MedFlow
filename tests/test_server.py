@@ -194,3 +194,75 @@ def test_pairing_redeem_rate_limit_returns_429(client):
         json={"code": "invalid-code", "device_id": "test-device"},
     )
     assert limited.status_code == 429
+
+
+
+def test_sync_pull_uses_incremental_cursor_and_echo_suppression(client, auth, repos, patient):
+    local = repos["patients"].get(patient.patient_id)
+    local.device_id = "workstation-A"
+    repos["patients"].update(local, ["device_id"], bump_version=False)
+    first = client.get(
+        "/api/sync/pull?since=0&limit=100&device_id=workstation-A",
+        headers=auth,
+    )
+    assert first.status_code == 200
+    payload = first.json()
+    assert patient.patient_number not in {
+        row["patient_number"] for row in payload["patients"]
+    }
+    assert payload["cursor"] >= 1
+    assert payload["has_more"] is False
+
+    local = repos["patients"].get(patient.patient_id)
+    local.device_id = "workstation-B"
+    repos["patients"].update(local, ["device_id"], bump_version=False)
+    second = client.get(
+        f"/api/sync/pull?since={payload['cursor']}&device_id=workstation-A",
+        headers=auth,
+    )
+    assert second.status_code == 200
+    assert patient.patient_number in {
+        row["patient_number"] for row in second.json()["patients"]
+    }
+
+
+def test_sync_pull_validates_cursor_and_page_size(client, auth):
+    assert client.get("/api/sync/pull?since=-1", headers=auth).status_code == 422
+    assert client.get("/api/sync/pull?limit=0", headers=auth).status_code == 422
+    assert client.get("/api/sync/pull?limit=501", headers=auth).status_code == 422
+
+
+def test_sync_push_reports_conflicts_separately_from_accepted(client, auth, repos, patient):
+    from datetime import datetime
+    from app.models import Patient
+
+    local = repos["patients"].get(patient.patient_id)
+    local.device_id = "workstation-A"
+    local.version = 2
+    repos["patients"].update(
+        local, ["device_id", "version"], bump_version=False
+    )
+    repos["patients"].db.connection().execute(
+        "UPDATE patients SET updated_at = ? WHERE patient_id = ?",
+        ("2026-10-28T10:00:00", patient.patient_id),
+    )
+    repos["patients"].db.connection().commit()
+    local = repos["patients"].get(patient.patient_id)
+    remote = Patient.from_row(local.to_row())
+    remote.name = "Remote conflicting name"
+    remote.version = 3
+    remote.updated_at = datetime(2026, 10, 29, 10, 0, 0)
+    remote.device_id = "workstation-A"
+
+    response = client.post("/api/sync/push", headers=auth, json={
+        "device_id": "workstation-A",
+        "batch_id": "batch-conflict-1",
+        "patients": [remote.to_row()],
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] == 0
+    assert body["accepted_patient_numbers"] == []
+    assert body["conflicted_patient_numbers"] == [patient.patient_number]
+    assert body["batch_id"] == "batch-conflict-1"
+    assert isinstance(body["server_cursor"], int)
