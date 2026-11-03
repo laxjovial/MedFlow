@@ -92,3 +92,57 @@ def test_sync_applies_remote_update_when_no_clinical_fields_conflict():
     assert report.pulled == 1
     assert patients.patient.version == 3
     assert len(patients.upserted) == 1
+
+
+
+def test_conflict_is_persisted_and_duplicate_pull_is_idempotent(repos, admin_user, patient):
+    from app.services.sync import SyncEngine
+    from datetime import timedelta
+
+    local = repos["patients"].get(patient.patient_id)
+    local.device_id = "device-A"
+    local.version = 2
+    local.updated_at = datetime(2026, 10, 28, 10, 0, 0)
+    repos["patients"].update(local, ["device_id", "version", "updated_at"], bump_version=False)
+    remote = Patient.from_row(local.to_row())
+    remote.name = "Remote changed name"
+    remote.version = 3
+    remote.updated_at = datetime(2026, 10, 29, 10, 0, 0)
+    remote.device_id = "server"
+
+    engine = SyncEngine(repos, device_id="device-A")
+    payload = {"patients": [remote.to_row()]}
+    first = engine.apply_pull_payload(payload)
+    second = engine.apply_pull_payload(payload)
+
+    assert first.conflicts and second.conflicts
+    pending = repos["sync_conflicts"].list_pending()
+    assert len(pending) == 1
+    detail = repos["sync_conflicts"].get_conflict(pending[0]["conflict_id"])
+    assert detail["local_snapshot"]["name"] == local.name
+    assert detail["remote_snapshot"]["name"] == "Remote changed name"
+    assert detail["conflicting_fields"]
+
+
+def test_conflict_repository_resolution_is_one_way(repos, admin_user, patient):
+    from app.services.sync import SyncEngine
+
+    local = repos["patients"].get(patient.patient_id)
+    local.device_id = "device-A"
+    local.version = 2
+    local.updated_at = datetime(2026, 10, 28, 10, 0, 0)
+    repos["patients"].update(local, ["device_id", "version", "updated_at"], bump_version=False)
+    remote = Patient.from_row(local.to_row())
+    remote.notes = "Remote notes"
+    remote.version = 3
+    remote.updated_at = datetime(2026, 10, 29, 10, 0, 0)
+    remote.device_id = "server"
+    SyncEngine(repos, device_id="device-A").apply_pull_payload({"patients": [remote.to_row()]})
+    conflict = repos["sync_conflicts"].list_pending()[0]
+    assert repos["sync_conflicts"].resolve(
+        conflict["conflict_id"], actor="admin", choice="keep_local"
+    )
+    assert not repos["sync_conflicts"].resolve(
+        conflict["conflict_id"], actor="admin", choice="keep_local"
+    )
+    assert repos["sync_conflicts"].get_conflict(conflict["conflict_id"])["status"] == "resolved"
