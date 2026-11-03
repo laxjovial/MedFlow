@@ -11,7 +11,7 @@ async function api(path, options = {}) {
   const res = await fetch(`/api${path}`, {
     "Content-Type": "application/json",
     ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", "X-MedFlow-Web-Session": "1", ...(options.headers || {}) },
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -21,37 +21,21 @@ async function api(path, options = {}) {
   return body;
 }
 
-function readSession() {
-  try {
-    const raw = localStorage.getItem("medflow.session");
-    if (!raw) return null;
-    const s = JSON.parse(raw);
-    return s && s.token ? s : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveSession(data) {
-  localStorage.setItem("medflow.session",
-    JSON.stringify({ token: data.token, user: data.user }));
+function saveSession() {
+  localStorage.removeItem("medflow.session");
+  localStorage.removeItem("medflow.remember");
   location.href = "/app";
 }
 
-/* ------------------------------------------- already signed in? sail on */
-
 (async function skipIfSignedIn() {
-  const session = readSession();
-  if (!session) return;
+  localStorage.removeItem("medflow.session");
   try {
-    // Confirm the token is still accepted (never trust a stale local copy).
-    await fetch("/api/auth/me", {
-      headers: { Authorization: `Bearer ${session.token}` },
-    }).then((res) => { if (!res.ok) throw new Error("stale"); });
-    location.replace("/app");   // replace: history keeps working naturally
-  } catch {
-    localStorage.removeItem("medflow.session");  // expired — show the form
-  }
+    const res = await fetch("/api/auth/me", {
+      headers: { "X-MedFlow-Web-Session": "1" },
+      credentials: "same-origin",
+    });
+    if (res.ok) location.replace("/app");
+  } catch { /* remain on sign-in form */ }
 })();
 
 /* ------------------------------------------------------------ password */
@@ -69,7 +53,7 @@ if (loginForm) {
                                password: $("#login-pass").value,
                                remember: $("#login-remember").checked }),
       });
-      saveSession(data);
+      saveSession();
     } catch (err) {
       box.textContent = err.message;
       box.classList.remove("hidden");
