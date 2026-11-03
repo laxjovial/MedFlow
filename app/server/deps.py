@@ -61,8 +61,17 @@ def current_user(request: Request) -> dict:
     if int(session["user_id"]) != int(payload.get("sub", 0)):
         raise HTTPException(status_code=401, detail="Session identity mismatch")
     bound_device = session.get("device_id")
-    if session.get("client_type") == "desktop" and not bound_device:
-        raise HTTPException(status_code=401, detail="Desktop device binding is invalid")
+    if session.get("client_type") == "desktop":
+        if not bound_device:
+            raise HTTPException(status_code=401, detail="Desktop device binding is invalid")
+        device_row = request.app.state.repos["users"].db.execute(
+            "SELECT owner_user_id, revoked_at FROM devices WHERE device_id = ?",
+            (bound_device,),
+        ).fetchone()
+        if (not device_row or device_row["revoked_at"] is not None
+                or (device_row["owner_user_id"] is not None
+                    and int(device_row["owner_user_id"]) != int(session["user_id"]))):
+            raise HTTPException(status_code=401, detail="Workstation is revoked or no longer assigned to this account")
 
     user_id = int(payload.get("sub", 0))
     user = request.app.state.repos["users"].get(user_id)
