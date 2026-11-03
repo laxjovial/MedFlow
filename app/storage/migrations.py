@@ -132,6 +132,59 @@ def _migrate_sync_hardening(conn: sqlite3.Connection) -> None:
     """)
 
 
+
+def _migrate_device_scope(conn: sqlite3.Connection) -> None:
+    """Add workstation ownership, scope assignment and revocation state."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
+    for name, declaration in (
+        ("owner_user_id", "INTEGER REFERENCES users(user_id)"),
+        ("revoked_at", "TEXT"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE devices ADD COLUMN {name} {declaration}")
+    conn.execute("DROP TRIGGER IF EXISTS trg_patients_sync_insert")
+    conn.execute("DROP TRIGGER IF EXISTS trg_patients_sync_update")
+    snapshot = """json_object(
+        'patient_id', NEW.patient_id, 'patient_number', NEW.patient_number,
+        'name', NEW.name, 'age', NEW.age, 'sex', NEW.sex,
+        'date_of_birth', NEW.date_of_birth, 'phone', NEW.phone,
+        'email', NEW.email, 'address', NEW.address,
+        'blood_pressure', NEW.blood_pressure, 'heart_rate', NEW.heart_rate,
+        'weight', NEW.weight, 'medical_history', NEW.medical_history,
+        'diagnosis', NEW.diagnosis, 'notes', NEW.notes,
+        'version', NEW.version, 'created_at', NEW.created_at,
+        'updated_at', NEW.updated_at, 'created_by', NEW.created_by,
+        'updated_by', NEW.updated_by, 'device_id', NEW.device_id,
+        'origin_unit_id', NEW.origin_unit_id, 'deleted', NEW.deleted,
+        'department_ids', (SELECT json_group_array(unit_id)
+                           FROM patient_departments
+                           WHERE patient_id = NEW.patient_id),
+        'change_id', NEW.change_id
+    )"""
+    for operation in ("INSERT", "UPDATE"):
+        suffix = "insert" if operation == "INSERT" else "update"
+        conn.execute(f"""
+            CREATE TRIGGER trg_patients_sync_{suffix}
+            AFTER {operation} ON patients BEGIN
+                INSERT INTO sync_change_log
+                    (patient_id, version, device_id, changed_at, snapshot)
+                VALUES (NEW.patient_id, NEW.version, NEW.device_id,
+                        NEW.updated_at, {snapshot});
+            END
+        """)
+    conn.execute("""
+        UPDATE sync_change_log
+        SET snapshot = (
+            SELECT json_set(snapshot, '$.department_ids',
+                COALESCE((SELECT json_group_array(unit_id)
+                          FROM patient_departments pd
+                          WHERE pd.patient_id = sync_change_log.patient_id), json('[]')))
+            FROM sync_change_log l
+            WHERE l.seq = sync_change_log.seq
+        )
+        WHERE snapshot IS NOT NULL
+    """)
+
 # Future migrations append here: (target_version, callable(conn)).
 # Each entry must bring the database from target_version - 1 to target_version.
 MIGRATIONS: list[tuple[int, "callable"]] = [
@@ -276,7 +329,9 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
     # v7 -> v8: monotonic patient change sequence for incremental sync.
     (8, _migrate_sync_change_log),
     # v8 -> v9: immutable patient snapshots, device-bound sessions and batch receipts.
-    (9, _migrate_sync_hardening)
+    (9, _migrate_sync_hardening),
+    # v9 -> v10: device ownership/revocation and department-aware snapshots.
+    (10, _migrate_device_scope),
 ]
 
 
