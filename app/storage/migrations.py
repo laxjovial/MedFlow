@@ -135,6 +135,13 @@ def _migrate_sync_hardening(conn: sqlite3.Connection) -> None:
 
 def _migrate_device_scope(conn: sqlite3.Connection) -> None:
     """Add workstation ownership, scope assignment and revocation state."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS devices (
+            device_id TEXT PRIMARY KEY, label TEXT,
+            unit_id INTEGER REFERENCES units(unit_id),
+            last_seen_at TEXT, registered_at TEXT
+        )
+    """)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
     for name, declaration in (
         ("owner_user_id", "INTEGER REFERENCES users(user_id)"),
