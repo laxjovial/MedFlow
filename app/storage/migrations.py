@@ -111,6 +111,23 @@ MIGRATIONS: list[tuple[int, "callable"]] = [
         """),
         conn.execute("UPDATE users SET active = active WHERE 1"),
     )),
+    # v5 -> v6: persisted auth sessions for revocation and session lifecycle.
+    (6, lambda conn: (
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                jti TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                client_type TEXT NOT NULL DEFAULT 'api',
+                issued_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER
+            )
+        """),
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_active "
+            "ON auth_sessions(user_id, revoked_at, expires_at)"
+        ),
+    )),
 ]
 
 
