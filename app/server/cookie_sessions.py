@@ -77,7 +77,7 @@ def clear_browser_session(response: Response, request: Request) -> None:
 
 def require_cookie_csrf(request: Request, session_token: str) -> None:
     """Require a valid session-bound double-submit token for unsafe methods."""
-    if request.method.upper() in {"GET", "HEAD", "OPTIONS", "TRACE"}:
+    if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
         return
     cookie_value = request.cookies.get(CSRF_COOKIE, "")
     header_value = request.headers.get(CSRF_HEADER, "")
