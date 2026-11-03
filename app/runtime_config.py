@@ -74,6 +74,7 @@ class SessionConfig:
     remember_me_days: int = 7          # "stay signed in" — weekly at most
     sliding_refresh: bool = True       # renew expiry while the tab is open
     logouts_enabled: bool = True       # admin can pin the Sign out button off
+    cookie_secure: bool | None = None  # None follows request scheme; set True behind TLS-terminating proxies
 
 
 @dataclass
